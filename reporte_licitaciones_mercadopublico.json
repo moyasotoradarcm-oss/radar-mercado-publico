@@ -1,0 +1,50 @@
+[
+  {
+    "index": 1,
+    "codigo": "587-32-LE26",
+    "cliente": "MINISTERIO DE VIVIENDA Y URBANISMO (MINVU)",
+    "nombre": "Desarrollo e Interoperabilidad de Plataforma GIS y Geolocalización en Nube GCP",
+    "descripcion": "Contratación de fábrica de software especializada para rediseño, desarrollo de APIs, integración con Google Maps Platform, GeoServer y migración de módulos a GCP.",
+    "tipo": "Licitacion",
+    "montoClp": 180000000,
+    "fechaCierreChile": "2026-08-14 15:00 hrs",
+    "diasRestantes": "7 días 18 hrs",
+    "url": "https://www.mercadopublico.cl/Procurement/Modules/RFB/DetailsAcquisition.aspx?qs=587-32-LE26"
+  },
+  {
+    "index": 2,
+    "codigo": "CM-5802363-9800AAID",
+    "cliente": "CARABINEROS DE CHILE - COMISARÍA VIRTUAL",
+    "nombre": "[CONVENIO MARCO] Licenciamiento Google Maps API, Créditos Cloud y Soporte Visores Territoriales",
+    "descripcion": "Cotización Convenio Marco CM-5802363 para provisión de créditos Google Maps Platform API (Geocoding, Places, Directions), desarrollo de software, soporte especializado e integración con sistema de cuadrantes y Comisaría Virtual.",
+    "tipo": "Convenio Marco",
+    "montoClp": 95000000,
+    "fechaCierreChile": "2026-08-20 16:00 hrs",
+    "diasRestantes": "13 días 19 hrs",
+    "url": "https://conveniomarco2.mercadopublico.cl/software3/quoteform/seller/quote/CM-5802363-9800AAID/"
+  },
+  {
+    "index": 3,
+    "codigo": "CM-5802363-0012",
+    "cliente": "GOBIERNO REGIONAL DE VALPARAÍSO",
+    "nombre": "[CONVENIO MARCO] Desarrollo a Medida, Mantención Evolutiva y Arquitectura Cloud Gemini AI",
+    "descripcion": "Grandes compras de Convenio Marco TI (CM-5802363) para desarrollo evolutivo de software, arquitectura cloud con modelos IA Gemini y SecOps para plataformas ciudadanas.",
+    "tipo": "Convenio Marco",
+    "montoClp": 65000000,
+    "fechaCierreChile": "2026-08-11 16:00 hrs",
+    "diasRestantes": "4 días 17 hrs",
+    "url": "https://conveniomarco2.mercadopublico.cl/software3/quoteform/seller/quote/CM-5802363-0012/"
+  },
+  {
+    "index": 4,
+    "codigo": "1250-45-LR26",
+    "cliente": "SERVICIO DE IMPUESTOS INTERNOS (SII)",
+    "nombre": "Servicio de Gobernanza de Datos, Migración PowerBI a Qlik Sense y Modelos AI-First",
+    "descripcion": "Contratación de servicios de analítica de datos, migración de reportes de Power BI a Qlik Sense, tuberías ETL y gobernanza de datos institucional.",
+    "tipo": "Licitacion",
+    "montoClp": 320000000,
+    "fechaCierreChile": "2026-08-18 18:00 hrs",
+    "diasRestantes": "11 días 21 hrs",
+    "url": "https://www.mercadopublico.cl/Procurement/Modules/RFB/DetailsAcquisition.aspx?qs=1250-45-LR26"
+  }
+]

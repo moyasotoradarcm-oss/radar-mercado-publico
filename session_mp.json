@@ -1,0 +1,45 @@
+{
+  "cookies": [
+    {
+      "name": "ASP.NET_SessionId",
+      "value": "g4raimyv0ipjmcmjxjk1zzss",
+      "domain": "www.mercadopublico.cl",
+      "path": "/",
+      "expires": -1,
+      "httpOnly": true,
+      "secure": false,
+      "sameSite": "Lax"
+    },
+    {
+      "name": "GCLB",
+      "value": "\"2f8aa360f41da8d7\"",
+      "domain": "www.mercadopublico.cl",
+      "path": "/",
+      "expires": 1786244764.156404,
+      "httpOnly": true,
+      "secure": false,
+      "sameSite": "Lax"
+    },
+    {
+      "name": "PHPSESSID",
+      "value": "10400a7b1177e4fa1d369584f865b664",
+      "domain": ".conveniomarco2.mercadopublico.cl",
+      "path": "/",
+      "expires": 1786255567.961917,
+      "httpOnly": true,
+      "secure": true,
+      "sameSite": "Lax"
+    },
+    {
+      "name": "X-Magento-Vary",
+      "value": "8ac07094c4a52dbdb2fe97217d3316d5c61afec868ce31becac860cd271bdd2a",
+      "domain": "conveniomarco2.mercadopublico.cl",
+      "path": "/",
+      "expires": 1786255567.962286,
+      "httpOnly": true,
+      "secure": true,
+      "sameSite": "Lax"
+    }
+  ],
+  "origins": []
+}
