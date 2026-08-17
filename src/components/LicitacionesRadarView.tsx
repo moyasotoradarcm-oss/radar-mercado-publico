@@ -1,4 +1,5 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useDeferredValue } from 'react';
+import { useDebounce } from '../lib/useDebounce';
 import {
   Search,
   Filter,
@@ -16,36 +17,70 @@ import {
   Check,
   RefreshCw,
   AlertTriangle,
-  Bell
+  Bell,
+  AlertCircle,
+  FileSpreadsheet
 } from 'lucide-react';
 import { LicitacionItem, TipoProceso, AlertaRule, SET_PALABRAS_CLAVE_MASTER } from '../types';
 import { openGoogleCalendar } from '../lib/googleCalendar';
-import { formatChileDateTime, calculateChileRemainingTime, getItemOfficialUrl } from '../lib/dateUtils';
-import { matchesDeepSearch, matchesAllTagsDeep, matchesFlexibleTipo, cleanTextPrefixes } from '../lib/searchUtils';
+import { formatChileDateTime, calculateChileRemainingTime, getItemOfficialUrl, isItemExpired, cleanOfficialId, extractFechaCierre } from '../lib/dateUtils';
+import { matchesSearchTerm, matchesTipoExact, matchesAllTagsDeep, cleanTextPrefixes } from '../lib/searchUtils';
 import { CreateAlertModal } from './CreateAlertModal';
+
+import { fetchLicitacionPorCodigo } from '../services/mercadoPublicoApi';
 
 interface LicitacionesRadarViewProps {
   licitaciones: LicitacionItem[];
-  onSelectLicitacionAI: (item: LicitacionItem) => void;
-  onAddPostulacion: (item: LicitacionItem) => void;
-  onShareItem: (item: LicitacionItem) => void;
+  radarFilter7Days?: boolean;
+  setRadarFilter7Days?: (val: boolean) => void;
+  openAiEvaluator?: (item: LicitacionItem) => void;
+  openShareModal?: (item: LicitacionItem) => void;
+  onSelectLicitacionAI?: (item: LicitacionItem) => void;
+  onAddPostulacion?: (item: LicitacionItem) => void;
+  onShareItem?: (item: LicitacionItem) => void;
   onAddAlerta?: (alerta: AlertaRule) => void;
+  onFastTrackSearchResult?: (items: LicitacionItem[]) => void;
   initial7DaysFilter?: boolean;
+  setActiveTab?: (tab: any) => void;
 }
 
 const PRESET_KEYWORDS = SET_PALABRAS_CLAVE_MASTER;
 
 export const LicitacionesRadarView: React.FC<LicitacionesRadarViewProps> = ({
   licitaciones,
+  openAiEvaluator,
   onSelectLicitacionAI,
   onAddPostulacion,
   onShareItem,
   onAddAlerta,
-  initial7DaysFilter = false
+  onFastTrackSearchResult,
+  initial7DaysFilter = false,
+  setActiveTab
 }) => {
   const [searchTerm, setSearchTerm] = useState('');
-  const [selectedTipo, setSelectedTipo] = useState<TipoProceso | 'TODOS'>('TODOS');
-  // Date filter mode: '30DIAS' (default), '7DIAS', 'URGENTES', 'TODOS'
+  const debouncedSearchTerm = useDebounce(searchTerm, 300);
+
+  // Fast-Track Búsqueda Directa por Código (ej: "425-37-LP26")
+  useEffect(() => {
+    if (!debouncedSearchTerm) return;
+    const cleanTerm = debouncedSearchTerm.trim();
+
+    // Patrón de código de Mercado Público
+    const isCodePattern = /^[0-9a-zA-Z]+-[0-9a-zA-Z]+-[0-9a-zA-Z]+/i.test(cleanTerm) ||
+                          /^(CM|CO|COT)-[0-9a-zA-Z]+/i.test(cleanTerm) ||
+                          /^[0-9]{4,}-[0-9a-zA-Z]+/i.test(cleanTerm);
+
+    if (isCodePattern) {
+      fetchLicitacionPorCodigo(cleanTerm).then((found) => {
+        if (found && found.length > 0 && onFastTrackSearchResult) {
+          onFastTrackSearchResult(found);
+        }
+      }).catch((err) => console.warn('Fast-track search error:', err));
+    }
+  }, [debouncedSearchTerm, onFastTrackSearchResult]);
+
+  const [selectedTipo, setSelectedTipo] = useState<string>('TODOS');
+  const [selectedStatus, setSelectedStatus] = useState<'ACTIVAS' | 'VENCIDAS' | 'TODAS'>('ACTIVAS');
   const [selectedRange, setSelectedRange] = useState<'30DIAS' | '7DIAS' | 'URGENTES' | 'TODOS'>(
     initial7DaysFilter ? '7DIAS' : '30DIAS'
   );
@@ -59,52 +94,59 @@ export const LicitacionesRadarView: React.FC<LicitacionesRadarViewProps> = ({
     );
   };
 
+  const safeLicitaciones = useMemo(() => licitaciones || [], [licitaciones]);
+
+  // Real Counts
+  const activasCount = useMemo(() => safeLicitaciones.filter((item) => item && !isItemExpired(item)).length, [safeLicitaciones]);
+  const vencidasCount = useMemo(() => safeLicitaciones.filter((item) => item && isItemExpired(item)).length, [safeLicitaciones]);
+
   const filteredLicitaciones = useMemo(() => {
-    return licitaciones.filter((item) => {
-      // REQUIREMENT 1: Automatically exclude any opportunity with diasRestantes <= 0
-      if (item.diasRestantes <= 0) {
+    return safeLicitaciones.filter((item) => {
+      if (!item) return false;
+
+      const hasSearchQuery = Boolean(debouncedSearchTerm && debouncedSearchTerm.trim());
+
+      // 1. Case-insensitive search on id, nombre, organismo using toLowerCase()
+      if (hasSearchQuery && !matchesSearchTerm(item, debouncedSearchTerm)) {
         return false;
       }
 
-      // Search term: Evaluate 100% of full text across all fields (accent & case insensitive)
-      if (searchTerm.trim() && !matchesDeepSearch(item, searchTerm)) {
+      // 2. Modality filter directly on `tipo`
+      if (selectedTipo !== 'TODOS' && selectedTipo !== 'Todas' && !matchesTipoExact(item.tipo, selectedTipo)) {
         return false;
       }
 
-      // Process Type
-      if (selectedTipo !== 'TODOS' && !matchesFlexibleTipo(item.tipo, selectedTipo, item.codigo)) {
-        return false;
-      }
+      // 3. Apply status & date range filters if no search query is typed
+      if (!hasSearchQuery) {
+        const expired = isItemExpired(item);
 
-      // Date Range Filter (Default: 30 Days)
-      if (selectedRange === '7DIAS' && !item.esUltimos7Dias) {
-        return false;
-      }
-      if (selectedRange === 'URGENTES' && item.diasRestantes > 3) {
-        return false;
-      }
-      if (selectedRange === '30DIAS') {
-        // Filter published within last 30 days or active in 30 days
-        const closeDate = new Date(item.fechaCierre);
-        const now = new Date();
-        const diffDays = Math.ceil((closeDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
-        if (diffDays > 30) {
+        if (selectedStatus === 'ACTIVAS' && expired) {
+          return false;
+        }
+        if (selectedStatus === 'VENCIDAS' && !expired) {
+          return false;
+        }
+
+        if (selectedRange === '7DIAS' && !item.esUltimos7Dias) {
+          return false;
+        }
+        if (selectedRange === 'URGENTES' && (expired || (item.diasRestantes ?? 99) > 3)) {
           return false;
         }
       }
 
-      // Tags / Preset Keywords filter: Deep search across ID, Name, Organismo (Cliente), Description, and Tags
-      if (selectedTags.length > 0 && !matchesAllTagsDeep(item, selectedTags)) {
+      // 4. Tags filter
+      if ((selectedTags || []).length > 0 && !matchesAllTagsDeep(item, selectedTags)) {
         return false;
       }
 
       return true;
     });
-  }, [licitaciones, searchTerm, selectedTipo, selectedRange, selectedTags]);
+  }, [safeLicitaciones, selectedStatus, debouncedSearchTerm, selectedTipo, selectedRange, selectedTags]);
 
   return (
     <div className="space-y-6 pb-12">
-      {/* Dynamic Header Title based on Active Range */}
+      {/* Dynamic Header Title & Count Badges */}
       <div className="bg-slate-900 text-white p-5 rounded-2xl shadow-sm border border-slate-800 flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
         <div>
           <div className="flex items-center space-x-2">
@@ -123,19 +165,27 @@ export const LicitacionesRadarView: React.FC<LicitacionesRadarViewProps> = ({
                 ? 'ÚLTIMOS 7 DÍAS'
                 : selectedRange === 'URGENTES'
                 ? 'POR VENCER (≤3 DÍAS)'
-                : 'TODAS ACTIVAS'
+                : 'CONSOLIDADO COMPLETO'
             }
           </h1>
           <p className="text-xs sm:text-sm text-slate-300 mt-0.5">
-            Monitoreo en tiempo real de licitaciones públicas, convenios marco y compras ágiles extraídas.
+            Monitoreo en tiempo real con verificación dinámica de vigencia y alertas de vencimiento.
           </p>
         </div>
-        <div className="flex items-center space-x-3 bg-slate-800/80 px-4 py-2.5 rounded-xl border border-slate-700/60">
-          <div className="text-right">
-            <div className="text-[11px] font-semibold text-slate-400">Mostrando en Radar</div>
-            <div className="text-lg font-black text-cyan-400">
-              {filteredLicitaciones.length} Oportunidades
+
+        {/* Real Status Badges (Activas vs Vencidas) */}
+        <div className="flex items-center space-x-2">
+          <div className="bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-3 py-2 rounded-xl text-right">
+            <div className="text-[10px] font-bold uppercase tracking-wider">Activas</div>
+            <div className="text-base font-black">{activasCount}</div>
+          </div>
+
+          <div className="bg-red-500/10 text-red-400 border border-red-500/20 px-3 py-2 rounded-xl text-right font-bold">
+            <div className="text-[10px] font-bold uppercase tracking-wider flex items-center justify-end space-x-1">
+              <AlertTriangle className="w-3 h-3 text-red-400" />
+              <span>Vencidas</span>
             </div>
+            <div className="text-base font-black">{vencidasCount}</div>
           </div>
         </div>
       </div>
@@ -143,23 +193,47 @@ export const LicitacionesRadarView: React.FC<LicitacionesRadarViewProps> = ({
       {/* Search Header & Filter Box */}
       <div className="bg-white rounded-2xl border border-slate-200/80 p-5 shadow-sm space-y-4">
         <div className="flex flex-col md:flex-row items-center justify-between gap-4">
-          <div className="relative flex-1 w-full">
-            <Search className="w-5 h-5 absolute left-3.5 top-3.5 text-slate-400" />
-            <input
-              type="text"
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-              placeholder="Buscar por código (ej. 587-32-LE26), palabra clave, tecnología o cliente..."
-              className="w-full pl-11 pr-4 py-3 bg-slate-50 rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm"
-            />
-            {searchTerm && (
-              <button
-                onClick={() => setSearchTerm('')}
-                className="absolute right-3.5 top-3 text-xs text-slate-400 hover:text-slate-600 bg-slate-200 px-2 py-1 rounded"
-              >
-                Limpiar
-              </button>
-            )}
+          <div className="flex flex-col sm:flex-row items-center gap-3 w-full max-w-2xl">
+            <div className="relative w-full flex-1">
+              <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none">
+                🔍
+              </span>
+              <input
+                type="text"
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                placeholder="Buscar por código, título, organismo o palabra clave..."
+                style={{
+                  color: '#0f172a',
+                  backgroundColor: '#ffffff',
+                  caretColor: '#0f172a',
+                  WebkitTextFillColor: '#0f172a',
+                  opacity: 1
+                }}
+                className="w-full pl-10 pr-8 py-2 border border-slate-300 rounded-lg text-sm font-medium focus:ring-2 focus:ring-blue-500 outline-none shadow-xs"
+              />
+              {searchTerm && (
+                <button
+                  onClick={() => setSearchTerm('')}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-xs font-bold text-slate-400 hover:text-slate-600"
+                >
+                  ✕
+                </button>
+              )}
+            </div>
+
+            <button
+              onClick={() => {
+                if (setActiveTab) {
+                  setActiveTab('compradores');
+                }
+              }}
+              className="flex items-center space-x-2 bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs px-4 py-2 rounded-lg shadow-sm transition shrink-0 w-full sm:w-auto justify-center"
+              title="Ir a Cargar Excel Masivo de Compradores"
+            >
+              <FileSpreadsheet className="w-4 h-4 text-emerald-200" />
+              <span>📊 Cargar Excel Masivo</span>
+            </button>
           </div>
 
           <div className="flex items-center space-x-2 w-full md:w-auto justify-end">
@@ -186,6 +260,45 @@ export const LicitacionesRadarView: React.FC<LicitacionesRadarViewProps> = ({
           </div>
         </div>
 
+        {/* Status Tab Toggle: Activas vs Vencidas */}
+        <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-slate-100">
+          <span className="text-xs font-bold text-slate-700 mr-1">Estado de Vigencia:</span>
+          
+          <button
+            onClick={() => setSelectedStatus('ACTIVAS')}
+            className={`flex items-center space-x-1.5 text-xs font-bold px-3 py-1.5 rounded-xl border transition ${
+              selectedStatus === 'ACTIVAS'
+                ? 'bg-emerald-600 text-white border-emerald-600 shadow-xs'
+                : 'bg-emerald-50 text-emerald-800 border-emerald-200 hover:bg-emerald-100'
+            }`}
+          >
+            <span>🟢 Activas ({activasCount})</span>
+          </button>
+
+          <button
+            onClick={() => setSelectedStatus('VENCIDAS')}
+            className={`flex items-center space-x-1.5 text-xs font-bold px-3 py-1.5 rounded-xl border transition ${
+              selectedStatus === 'VENCIDAS'
+                ? 'bg-red-600 text-white border-red-600 shadow-xs'
+                : 'bg-red-50 text-red-800 border-red-200 hover:bg-red-100'
+            }`}
+          >
+            <AlertTriangle className="w-3.5 h-3.5 text-red-600" />
+            <span>🚨 Vencidas ({vencidasCount})</span>
+          </button>
+
+          <button
+            onClick={() => setSelectedStatus('TODAS')}
+            className={`flex items-center space-x-1.5 text-xs font-bold px-3 py-1.5 rounded-xl border transition ${
+              selectedStatus === 'TODAS'
+                ? 'bg-slate-800 text-white border-slate-700'
+                : 'bg-slate-100 text-slate-700 border-slate-200 hover:bg-slate-200'
+            }`}
+          >
+            <span>Todas ({licitaciones.length})</span>
+          </button>
+        </div>
+
         {/* Filter Toolbar */}
         <div className="flex flex-wrap items-center justify-between gap-3 pt-2 border-t border-slate-100">
           {/* Tipo selector */}
@@ -193,28 +306,28 @@ export const LicitacionesRadarView: React.FC<LicitacionesRadarViewProps> = ({
             <span className="text-xs font-semibold text-slate-500 mr-1 flex items-center">
               <Filter className="w-3.5 h-3.5 mr-1" /> Tipo:
             </span>
-            {(['TODOS', 'Licitacion', 'Convenio Marco', 'Compra Agil'] as const).map((tipo) => (
+            {(['TODOS', 'Licitación', 'Convenio Marco', 'Compra Ágil'] as const).map((tipo) => (
               <button
                 key={tipo}
                 onClick={() => setSelectedTipo(tipo)}
                 className={`text-xs px-3 py-1.5 rounded-lg font-medium transition ${
-                  selectedTipo === tipo
+                  selectedTipo === tipo || (tipo === 'Licitación' && selectedTipo === 'Licitacion') || (tipo === 'Compra Ágil' && selectedTipo === 'Compra Agil')
                     ? 'bg-blue-600 text-white shadow-xs'
                     : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
                 }`}
               >
                 {tipo === 'TODOS'
-                  ? 'Todos'
-                  : tipo === 'Compra Agil'
+                  ? 'Todas'
+                  : tipo === 'Compra Ágil'
                   ? '⚡ Compra Ágil'
                   : tipo === 'Convenio Marco'
                   ? '🤝 Convenio Marco'
-                  : '📋 Licitaciones'}
+                  : '📋 Licitación'}
               </button>
             ))}
           </div>
 
-          {/* Date range filter buttons (Default: 30 Días) */}
+          {/* Date range filter buttons */}
           <div className="flex flex-wrap items-center gap-2">
             <span className="text-xs font-semibold text-slate-500 mr-1">Rango:</span>
             
@@ -227,7 +340,7 @@ export const LicitacionesRadarView: React.FC<LicitacionesRadarViewProps> = ({
               }`}
             >
               <Clock className="w-3.5 h-3.5 text-blue-600" />
-              <span>Últimos 30 Días (Por Defecto)</span>
+              <span>Últimos 30 Días</span>
             </button>
 
             <button
@@ -252,17 +365,6 @@ export const LicitacionesRadarView: React.FC<LicitacionesRadarViewProps> = ({
             >
               <Clock className="w-3.5 h-3.5 text-rose-500" />
               <span>Por Vencer (≤3 Días)</span>
-            </button>
-
-            <button
-              onClick={() => setSelectedRange('TODOS')}
-              className={`flex items-center space-x-1.5 text-xs font-semibold px-3 py-1.5 rounded-lg border transition ${
-                selectedRange === 'TODOS'
-                  ? 'bg-slate-800 text-white border-slate-700'
-                  : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
-              }`}
-            >
-              <span>Todas Activas</span>
             </button>
           </div>
         </div>
@@ -292,48 +394,50 @@ export const LicitacionesRadarView: React.FC<LicitacionesRadarViewProps> = ({
       {/* Results Header */}
       <div className="flex items-center justify-between px-1">
         <p className="text-sm font-semibold text-slate-700">
-          Mostrando <strong className="text-blue-600">{filteredLicitaciones.length}</strong> oportunidades vigentes
+          Mostrando <strong className="text-blue-600">{filteredLicitaciones.length}</strong> oportunidades ({selectedStatus.toLowerCase()})
         </p>
 
-        {(selectedTipo !== 'TODOS' || selectedRange !== '30DIAS' || selectedTags.length > 0 || searchTerm) && (
+        {(selectedTipo !== 'TODOS' || selectedStatus !== 'ACTIVAS' || selectedTags.length > 0 || searchTerm) && (
           <button
             onClick={() => {
+              setSearchTerm('');
               setSelectedTipo('TODOS');
+              setSelectedStatus('ACTIVAS');
               setSelectedRange('30DIAS');
               setSelectedTags([]);
-              setSearchTerm('');
             }}
-            className="text-xs text-rose-600 hover:text-rose-800 font-semibold flex items-center space-x-1"
+            className="text-xs text-blue-600 hover:underline font-medium"
           >
-            <RefreshCw className="w-3.5 h-3.5" />
-            <span>Restablecer Filtros</span>
+            Restablecer Filtros
           </button>
         )}
       </div>
 
-      {/* Cards View */}
+      {/* Grid or Table View */}
       {viewMode === 'grid' ? (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
-          {filteredLicitaciones.map((item) => {
-            const timeInfo = calculateChileRemainingTime(item.fechaCierre);
+          {filteredLicitaciones.slice(0, 100).map((item) => {
+            const expired = isItemExpired(item);
+            const fc = extractFechaCierre(item) || item.fechaCierre;
+            const timeInfo = calculateChileRemainingTime(fc);
+
             return (
               <div
                 key={item.codigo}
-                className={`bg-white rounded-2xl border transition flex flex-col justify-between shadow-xs hover:shadow-md ${
-                  item.esUltimos7Dias
-                    ? 'border-amber-300 ring-1 ring-amber-200'
-                    : 'border-slate-200'
+                className={`bg-white rounded-2xl border shadow-sm hover:shadow-md transition flex flex-col justify-between overflow-hidden relative ${
+                  expired ? 'border-red-300 bg-red-50/20' : 'border-slate-200 hover:border-blue-400'
                 }`}
               >
+                <div className={`h-1.5 ${expired ? 'bg-red-500' : 'bg-gradient-to-r from-blue-500 to-cyan-500'}`} />
+
                 <div className="p-5 space-y-3">
-                  {/* Badges */}
                   <div className="flex items-start justify-between gap-2">
                     <div className="flex flex-wrap items-center gap-1.5">
                       <span className="bg-slate-900 text-white font-mono text-xs font-bold px-2 py-0.5 rounded">
-                        {item.codigo}
+                        {cleanOfficialId(item.codigo)}
                       </span>
                       <span
-                        className={`text-[11px] font-semibold px-2 py-0.5 rounded ${
+                        className={`text-xs font-semibold px-2 py-0.5 rounded ${
                           item.tipo === 'Compra Agil'
                             ? 'bg-purple-100 text-purple-800'
                             : item.tipo === 'Convenio Marco'
@@ -343,110 +447,87 @@ export const LicitacionesRadarView: React.FC<LicitacionesRadarViewProps> = ({
                       >
                         {item.tipo}
                       </span>
-                      {item.esUltimos7Dias && (
-                        <span className="bg-amber-100 text-amber-800 text-[10px] font-bold px-2 py-0.5 rounded-full flex items-center space-x-1">
-                          <Flame className="w-3 h-3 text-amber-500" />
-                          <span>7 Días</span>
-                        </span>
-                      )}
                     </div>
 
-                    <span
-                      className={`text-xs font-bold px-2.5 py-1 rounded-full whitespace-nowrap ${
-                        timeInfo.dias <= 3
-                          ? 'bg-rose-100 text-rose-700 border border-rose-200'
-                          : 'bg-emerald-100 text-emerald-800 border border-emerald-200'
-                      }`}
-                    >
-                      ⏳ {timeInfo.badgeText}
-                    </span>
+                    {expired ? (
+                      <span className="px-2.5 py-1 rounded-full text-[11px] font-bold bg-red-500/10 text-red-600 border border-red-500/20 flex items-center space-x-1">
+                        <AlertCircle className="w-3 h-3 text-red-500" />
+                        <span>🔴 VENCIDA</span>
+                      </span>
+                    ) : (
+                      <span
+                        className={`px-2.5 py-1 rounded-full text-[11px] font-bold ${
+                          timeInfo.dias <= 3
+                            ? 'bg-rose-100 text-rose-700 border border-rose-200'
+                            : 'bg-emerald-100 text-emerald-800 border border-emerald-200'
+                        }`}
+                      >
+                        ⏳ {timeInfo.badgeText}
+                      </span>
+                    )}
                   </div>
 
-                  {/* Cliente and Title */}
-                  <div>
-                    <div className="flex items-center text-xs font-bold text-slate-500 uppercase tracking-wide truncate">
-                      <Building2 className="w-3.5 h-3.5 mr-1 text-slate-400" />
-                      <span className="truncate">{item.cliente}</span>
-                    </div>
-                    <h3 className="font-semibold text-slate-900 text-sm leading-snug line-clamp-2 mt-1">
-                      {cleanTextPrefixes(item.nombre)}
-                    </h3>
-                  </div>
+                  <h3 className="font-bold text-slate-900 text-sm line-clamp-2 leading-snug">
+                    {cleanTextPrefixes(item.nombre)}
+                  </h3>
 
-                  <p className="text-xs text-slate-600 line-clamp-3">
+                  <p className="text-xs text-slate-500 line-clamp-2">
                     {cleanTextPrefixes(item.descripcion)}
                   </p>
 
-                  {/* Info row */}
-                  <div className="pt-2 flex flex-col sm:flex-row sm:items-center justify-between text-xs text-slate-500 border-t border-slate-100 gap-1">
-                    <span>
-                      Cierre: <strong className="text-slate-800 font-mono">{formatChileDateTime(item.fechaCierre)}</strong>
-                    </span>
-                    <span className="font-semibold text-slate-700">
-                      {item.montoEstimadoClp
-                        ? `$${(item.montoEstimadoClp / 1000000).toFixed(1)}M CLP`
-                        : 'Monto N/I'}
-                    </span>
-                  </div>
-
-                  {/* Tags */}
-                  <div className="flex flex-wrap gap-1">
-                    {item.tags.map((tag) => (
-                      <span
-                        key={tag}
-                        className="text-[10px] bg-slate-100 text-slate-600 px-2 py-0.5 rounded font-medium"
-                      >
-                        #{tag}
+                  <div className="pt-2 border-t border-slate-100 text-xs text-slate-600 space-y-1">
+                    <div className="flex items-center justify-between">
+                      <span className="font-medium">Organismo:</span>
+                      <span className="font-semibold text-slate-800 truncate max-w-[180px]">
+                        {item.cliente}
                       </span>
-                    ))}
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span className="font-medium">Cierre CLT:</span>
+                      <span className={`font-mono font-bold ${expired ? 'text-red-600' : 'text-slate-900'}`}>
+                        {formatChileDateTime(fc)}
+                      </span>
+                    </div>
                   </div>
                 </div>
 
-                {/* Footer actions */}
-                <div className="px-5 py-3 bg-slate-50 border-t border-slate-100 flex items-center justify-between gap-2">
-                  <a
-                    href={getItemOfficialUrl(item)}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="flex items-center space-x-1 text-xs text-slate-600 hover:text-blue-600 font-semibold"
-                    title="Abrir Ficha Oficial en Mercado Público"
-                  >
-                    <ExternalLink className="w-3.5 h-3.5" />
-                    <span>Ficha MP</span>
-                  </a>
+                <div className="p-3 bg-slate-50 border-t border-slate-100 flex items-center justify-between gap-2">
+                  <div className="flex items-center space-x-1">
+                    <button
+                      onClick={() => setAlertModalItem(item)}
+                      className="p-1.5 text-slate-600 hover:text-amber-700 hover:bg-amber-50 rounded-lg border border-slate-200 transition text-xs font-bold"
+                      title="Crear Alerta"
+                    >
+                      <Bell className="w-3.5 h-3.5 text-amber-600" />
+                    </button>
+
+                    <a
+                      href={getItemOfficialUrl(item)}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="p-1.5 text-slate-600 hover:text-blue-700 hover:bg-blue-50 rounded-lg border border-slate-200 transition text-xs font-bold flex items-center space-x-1"
+                      title="Ver Ficha Oficial"
+                    >
+                      <ExternalLink className="w-3.5 h-3.5" />
+                      <span>Ficha</span>
+                    </a>
+                  </div>
 
                   <div className="flex items-center space-x-1.5">
                     <button
-                      onClick={() => openGoogleCalendar(item)}
-                      className="p-1.5 text-slate-600 hover:text-blue-600 hover:bg-slate-200 rounded-lg transition"
-                      title="Añadir a Google Calendar"
-                    >
-                      <Calendar className="w-4 h-4 text-blue-500" />
-                    </button>
-
-                    <button
-                      onClick={() => onShareItem(item)}
-                      className="p-1.5 text-slate-600 hover:text-cyan-600 hover:bg-slate-200 rounded-lg transition"
-                      title="Compartir Licitación"
-                    >
-                      <Share2 className="w-4 h-4 text-cyan-500" />
-                    </button>
-
-                    <button
                       onClick={() => onSelectLicitacionAI(item)}
-                      className="flex items-center space-x-1 text-xs bg-indigo-50 hover:bg-indigo-100 text-indigo-700 font-bold px-2.5 py-1.5 rounded-lg border border-indigo-200 transition"
+                      className="bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs px-2.5 py-1.5 rounded-lg shadow-xs transition"
                     >
-                      <Sparkles className="w-3.5 h-3.5 text-indigo-600" />
-                      <span>IA Gemini</span>
+                      Evaluar IA
                     </button>
-
-                    <button
-                      onClick={() => onAddPostulacion(item)}
-                      className="flex items-center space-x-1 text-xs bg-blue-600 hover:bg-blue-700 text-white font-semibold px-3 py-1.5 rounded-lg shadow-xs transition"
-                    >
-                      <Plus className="w-3.5 h-3.5" />
-                      <span>Postular</span>
-                    </button>
+                    {!expired && (
+                      <button
+                        onClick={() => onAddPostulacion(item)}
+                        className="bg-slate-900 hover:bg-slate-800 text-white font-bold text-xs px-2.5 py-1.5 rounded-lg transition"
+                      >
+                        + Postular
+                      </button>
+                    )}
                   </div>
                 </div>
               </div>
@@ -457,99 +538,96 @@ export const LicitacionesRadarView: React.FC<LicitacionesRadarViewProps> = ({
         /* Table View */
         <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-xs">
           <div className="overflow-x-auto">
-            <table className="w-full text-left text-xs border-collapse">
-              <thead className="bg-slate-900 text-white font-semibold uppercase text-[11px] tracking-wider">
-                <tr>
-                  <th className="px-4 py-3">Código</th>
-                  <th className="px-4 py-3">Organismo Comprador</th>
-                  <th className="px-4 py-3">Título / Requerimiento</th>
-                  <th className="px-4 py-3">Tipo</th>
-                  <th className="px-4 py-3">F. Cierre (Chile CLT)</th>
-                  <th className="px-4 py-3">Tiempo Restante</th>
-                  <th className="px-4 py-3 text-right">ACCIONES</th>
+            <table className="w-full text-left border-collapse text-xs">
+              <thead>
+                <tr className="bg-slate-100 text-slate-700 font-bold border-b border-slate-200 uppercase tracking-wider text-[11px]">
+                  <th className="py-3 px-4">Código ID</th>
+                  <th className="py-3 px-4">Nombre Requerimiento</th>
+                  <th className="py-3 px-4">Cliente</th>
+                  <th className="py-3 px-4">Tipo</th>
+                  <th className="py-3 px-4">F. Cierre (Chile CLT)</th>
+                  <th className="py-3 px-4 text-center">Estado / Restante</th>
+                  <th className="py-3 px-4 text-right">Acciones</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-slate-200">
-                {filteredLicitaciones.map((item) => {
-                  const timeInfo = calculateChileRemainingTime(item.fechaCierre);
+              <tbody className="divide-y divide-slate-200 bg-white">
+                {filteredLicitaciones.slice(0, 100).map((item) => {
+                  const expired = isItemExpired(item);
+                  const fc = extractFechaCierre(item) || item.fechaCierre;
+                  const timeInfo = calculateChileRemainingTime(fc);
+
                   return (
-                    <tr
-                      key={item.codigo}
-                      className="hover:bg-slate-100/90 cursor-pointer transition-colors duration-200"
-                    >
-                      <td className="px-4 py-3 font-mono font-bold text-slate-900">
-                        {item.codigo}
+                    <tr key={item.codigo} className={`hover:bg-slate-50 transition ${expired ? 'bg-red-50/20' : ''}`}>
+                      <td className="py-3 px-4 font-mono font-bold text-slate-900 whitespace-nowrap">
+                        <span className="bg-slate-100 border border-slate-200 px-2 py-0.5 rounded">
+                          {cleanOfficialId(item.codigo)}
+                        </span>
                       </td>
-                      <td className="px-4 py-3 font-semibold text-slate-700 max-w-[200px] truncate">
+                      <td className="py-3 px-4 font-semibold text-slate-800 max-w-xs sm:max-w-md">
+                        <p className="line-clamp-2">{cleanTextPrefixes(item.nombre)}</p>
+                      </td>
+                      <td className="max-w-[220px] truncate pr-4 text-slate-700 font-medium">
                         {item.cliente}
                       </td>
-                      <td className="px-4 py-3 max-w-[300px]">
-                        <p className="font-semibold text-slate-900 line-clamp-1">{cleanTextPrefixes(item.nombre)}</p>
-                        <p className="text-[11px] text-slate-500 line-clamp-1">{cleanTextPrefixes(item.descripcion)}</p>
-                      </td>
-                      <td className="px-4 py-3 whitespace-nowrap">
-                        <span className="bg-slate-100 text-slate-800 px-2 py-0.5 rounded font-medium">
+                      <td className="w-[120px] text-left whitespace-nowrap">
+                        <span className="inline-block px-2.5 py-1 text-xs font-semibold rounded-md bg-emerald-100 text-emerald-700">
                           {item.tipo}
                         </span>
                       </td>
-                      <td className="px-4 py-3 whitespace-nowrap text-slate-800 font-mono font-semibold">
-                        {formatChileDateTime(item.fechaCierre)}
+                      <td className={`py-3 px-4 whitespace-nowrap font-mono font-semibold ${expired ? 'text-red-600' : 'text-slate-800'}`}>
+                        {formatChileDateTime(fc)}
                       </td>
-                      <td className="px-4 py-3 whitespace-nowrap">
-                        <span
-                          className={`font-bold px-2 py-0.5 rounded-full ${
-                            timeInfo.dias <= 3
-                              ? 'bg-rose-100 text-rose-700'
-                              : 'bg-emerald-100 text-emerald-800'
-                          }`}
-                        >
-                          ⏳ {timeInfo.badgeText}
-                        </span>
+                      <td className="py-3 px-4 text-center whitespace-nowrap">
+                        {expired ? (
+                          <span className="px-2.5 py-1 rounded-full text-xs font-bold bg-red-500/10 text-red-600 border border-red-500/20">
+                            🔴 VENCIDA (Cerrada)
+                          </span>
+                        ) : (
+                          <span className="px-2.5 py-1 rounded-full text-xs font-bold bg-emerald-100 text-emerald-800 border border-emerald-200">
+                            ⏳ {timeInfo.badgeText}
+                          </span>
+                        )}
                       </td>
-                      <td className="px-4 py-3 text-right whitespace-nowrap">
+                      <td className="py-3 px-4 text-right whitespace-nowrap">
                         <div className="flex items-center justify-end space-x-1.5">
-                          <button
-                            onClick={() => setAlertModalItem(item)}
-                            className="inline-flex items-center space-x-1 bg-amber-50 hover:bg-amber-100 text-amber-800 font-bold px-2.5 py-1 rounded-lg border border-amber-200 transition text-[11px]"
-                            title="Crear Alerta Personalizada"
-                          >
-                            <Bell className="w-3.5 h-3.5 text-amber-600" />
-                            <span>🔔 Crear Alerta</span>
-                          </button>
-
                           <a
                             href={getItemOfficialUrl(item)}
                             target="_blank"
                             rel="noopener noreferrer"
-                            className="inline-flex items-center space-x-1 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold px-2.5 py-1 rounded-lg border border-slate-200 transition text-[11px]"
-                            title="Ver Ficha Oficial Mercado Público"
+                            className="bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold px-2 py-1 rounded-lg border border-slate-200 transition text-[11px]"
                           >
-                            <ExternalLink className="w-3.5 h-3.5 text-slate-500" />
-                            <span>🔗 Ver Ficha</span>
+                            Ficha
                           </a>
-
                           <button
-                            onClick={() => openGoogleCalendar(item)}
-                            className="p-1.5 text-blue-600 hover:bg-blue-50 rounded-lg border border-blue-200 bg-blue-50/50"
-                            title="Añadir a Google Calendar"
+                            onClick={() => {
+                              if (onSelectLicitacionAI) {
+                                onSelectLicitacionAI(item);
+                              } else if (openAiEvaluator) {
+                                openAiEvaluator(item);
+                              }
+                            }}
+                            className="bg-blue-600 hover:bg-blue-700 text-white font-bold px-2 py-1 rounded-lg transition text-[11px]"
                           >
-                            <Calendar className="w-3.5 h-3.5" />
+                            Evaluar IA
                           </button>
-
                           <button
-                            onClick={() => onSelectLicitacionAI(item)}
-                            className="p-1.5 text-indigo-600 hover:bg-indigo-50 rounded-lg border border-indigo-200 bg-indigo-50/50"
-                            title="Evaluar TDR con Gemini IA"
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setAlertModalItem(item);
+                            }}
+                            className="px-3 py-1.5 bg-amber-500 hover:bg-amber-600 text-white rounded-md text-xs font-bold transition-colors"
                           >
-                            <Sparkles className="w-3.5 h-3.5" />
+                            🔔 Alerta
                           </button>
-
-                          <button
-                            onClick={() => onAddPostulacion(item)}
-                            className="bg-blue-600 hover:bg-blue-700 text-white font-bold px-2.5 py-1 rounded-lg text-[11px] transition shadow-xs"
-                          >
-                            + Postular
-                          </button>
+                          {!expired && (
+                            <button
+                              onClick={() => onAddPostulacion?.(item)}
+                              className="bg-slate-900 hover:bg-slate-800 text-white font-bold px-2 py-1 rounded-lg transition text-[11px]"
+                            >
+                              + Postular
+                            </button>
+                          )}
                         </div>
                       </td>
                     </tr>
@@ -561,14 +639,12 @@ export const LicitacionesRadarView: React.FC<LicitacionesRadarViewProps> = ({
         </div>
       )}
 
-      {/* Alert Modal preloaded for selected row */}
-      {alertModalItem && (
+      {/* Create Alert Modal */}
+      {alertModalItem && onAddAlerta && (
         <CreateAlertModal
-          item={alertModalItem}
+          licitacion={alertModalItem}
           onClose={() => setAlertModalItem(null)}
-          onAddAlerta={(newRule) => {
-            if (onAddAlerta) onAddAlerta(newRule);
-          }}
+          onSave={onAddAlerta}
         />
       )}
     </div>

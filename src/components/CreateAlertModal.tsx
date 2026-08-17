@@ -3,34 +3,50 @@ import { Bell, X, CheckCircle2 } from 'lucide-react';
 import { LicitacionItem, AlertaRule, TipoProceso } from '../types';
 
 interface CreateAlertModalProps {
-  item: LicitacionItem;
+  item?: LicitacionItem;
+  licitacion?: LicitacionItem;
   onClose: () => void;
-  onAddAlerta: (alerta: AlertaRule) => void;
+  onAddAlerta?: (alerta: AlertaRule) => void;
+  onSave?: (alerta: AlertaRule) => void;
 }
 
 export const CreateAlertModal: React.FC<CreateAlertModalProps> = ({
   item,
+  licitacion,
   onClose,
-  onAddAlerta
+  onAddAlerta,
+  onSave
 }) => {
-  const [nombre, setNombre] = useState(`Alerta: ${item.codigo} - ${item.cliente}`);
+  const rawObj = licitacion || item || {};
+  const targetItem = {
+    codigo: (rawObj as any).codigo || (rawObj as any).id || 'S/I',
+    cliente: (rawObj as any).cliente || (rawObj as any).organismo || 'General',
+    nombre: (rawObj as any).nombre || (rawObj as any).licitacionNombre || 'Alerta Personalizada',
+    montoEstimadoClp: (rawObj as any).montoEstimadoClp || (rawObj as any).monto || 0,
+    tipo: ((rawObj as any).tipo || 'Licitacion') as TipoProceso,
+    tags: (rawObj as any).tags || []
+  };
+
+  const saveFn = onAddAlerta || onSave || (() => {});
+
+  const [nombre, setNombre] = useState(`Alerta: ${targetItem.codigo} - ${targetItem.cliente}`);
   const [palabras, setPalabras] = useState(
-    [item.codigo, ...(item.tags || [])].join(', ')
+    [targetItem.codigo, ...(targetItem.tags || [])].filter(Boolean).join(', ')
   );
-  const [monto, setMonto] = useState(item.montoEstimadoClp ? String(item.montoEstimadoClp) : '');
+  const [monto, setMonto] = useState(targetItem.montoEstimadoClp ? String(targetItem.montoEstimadoClp) : '');
   const [savedSuccess, setSavedSuccess] = useState(false);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     const newRule: AlertaRule = {
       id: `alerta-${Date.now()}`,
-      nombre: nombre.trim() || `Alerta ${item.codigo}`,
+      nombre: nombre.trim() || `Alerta ${targetItem.codigo}`,
       palabrasClave: palabras
         .split(',')
         .map((p) => p.trim())
         .filter(Boolean),
-      organismos: [item.cliente],
-      tipos: [item.tipo],
+      organismos: [targetItem.cliente],
+      tipos: [targetItem.tipo],
       montoMinimoClp: monto ? Number(monto) : undefined,
       notificarEmail: true,
       notificarApp: true,
@@ -38,7 +54,7 @@ export const CreateAlertModal: React.FC<CreateAlertModalProps> = ({
       creadaEn: new Date().toISOString().split('T')[0]
     };
 
-    onAddAlerta(newRule);
+    saveFn(newRule);
     setSavedSuccess(true);
     setTimeout(() => {
       onClose();
@@ -69,9 +85,9 @@ export const CreateAlertModal: React.FC<CreateAlertModalProps> = ({
         ) : (
           <form onSubmit={handleSubmit} className="space-y-4 text-xs">
             <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 space-y-1">
-              <div className="font-mono font-bold text-slate-900">{item.codigo}</div>
-              <div className="font-semibold text-slate-700">{item.cliente}</div>
-              <div className="text-slate-500 line-clamp-1">{item.nombre}</div>
+              <div className="font-mono font-bold text-slate-900">{targetItem.codigo}</div>
+              <div className="font-semibold text-slate-700">{targetItem.cliente}</div>
+              <div className="text-slate-500 line-clamp-1">{targetItem.nombre}</div>
             </div>
 
             <div>

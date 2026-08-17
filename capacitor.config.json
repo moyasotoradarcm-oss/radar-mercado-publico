@@ -1,0 +1,6 @@
+{
+  "server": {
+    "androidScheme": "https",
+    "cleartext": true
+  }
+}

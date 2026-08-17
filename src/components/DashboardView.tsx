@@ -1,4 +1,5 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useMemo, useDeferredValue } from 'react';
+import { useDebounce } from '../lib/useDebounce';
 import {
   Sparkles,
   Flame,
@@ -10,76 +11,122 @@ import {
   ChevronRight,
   Plus,
   FileText,
+  FileSpreadsheet,
   AlertCircle,
   Share2,
   CheckCircle2,
   Zap,
-  ShieldCheck,
-  Key,
   Table,
   ChevronDown,
   ChevronUp,
   Search,
   Filter,
-  Bell
+  Bell,
+  AlertTriangle
 } from 'lucide-react';
-import { LicitacionItem, Postulacion, AlertaRule } from '../types';
+import { LicitacionItem, Postulacion, AlertaRule, OrdenCompraItem } from '../types';
 import { openGoogleCalendar } from '../lib/googleCalendar';
-import { formatChileDateTime, calculateChileRemainingTime, getItemOfficialUrl } from '../lib/dateUtils';
-import { matchesDeepSearch, matchesFlexibleTipo, cleanTextPrefixes } from '../lib/searchUtils';
+import { formatChileDateTime, calculateChileRemainingTime, getItemOfficialUrl, isItemExpired, cleanOfficialId, extractFechaCierre } from '../lib/dateUtils';
+import { matchesSearchTerm, matchesTipoExact, cleanTextPrefixes } from '../lib/searchUtils';
 import { CreateAlertModal } from './CreateAlertModal';
+import { fetchLicitacionPorCodigo } from '../services/mercadoPublicoApi';
 
 interface DashboardViewProps {
   licitaciones: LicitacionItem[];
   postulaciones: Postulacion[];
-  onSelectLicitacionAI: (item: LicitacionItem) => void;
-  onAddPostulacion: (item: LicitacionItem) => void;
-  onNavigateToRadar: (filter7Days?: boolean) => void;
-  openReportsModal: () => void;
-  openShareModal: () => void;
-  openAuthModal: () => void;
+  ordenesCompra?: OrdenCompraItem[];
+  setActiveTab?: (tab: any) => void;
+  setRadarFilter7Days?: (val: boolean) => void;
+  onSelectLicitacionAI?: (item: LicitacionItem) => void;
+  onAddPostulacion?: (item: LicitacionItem) => void;
+  onNavigateToRadar?: (filter7Days?: boolean) => void;
+  openReportsModal?: () => void;
+  openShareModal?: () => void;
+  openAuthModal?: () => void;
   onAddAlerta?: (alerta: AlertaRule) => void;
+  onFastTrackSearchResult?: (items: LicitacionItem[]) => void;
 }
 
 export const DashboardView: React.FC<DashboardViewProps> = ({
   licitaciones,
   postulaciones,
+  setActiveTab,
   onSelectLicitacionAI,
   onAddPostulacion,
   onNavigateToRadar,
   openReportsModal,
-  openShareModal,
-  openAuthModal,
-  onAddAlerta
+  onAddAlerta,
+  onFastTrackSearchResult
 }) => {
   const [tableSearch, setTableSearch] = useState('');
-  const [tableTipo, setTableTipo] = useState<string>('TODOS');
+  const debouncedTableSearch = useDebounce(tableSearch, 300);
+
+  // Fast-Track búsqueda directa por código
+  useEffect(() => {
+    if (!debouncedTableSearch) return;
+    const cleanTerm = debouncedTableSearch.trim();
+
+    const isCodePattern = /^[0-9a-zA-Z]+-[0-9a-zA-Z]+-[0-9a-zA-Z]+/i.test(cleanTerm) ||
+                          /^(CM|CO|COT)-[0-9a-zA-Z]+/i.test(cleanTerm) ||
+                          /^[0-9]{4,}-[0-9a-zA-Z]+/i.test(cleanTerm);
+
+    if (isCodePattern) {
+      fetchLicitacionPorCodigo(cleanTerm).then((found) => {
+        if (found && found.length > 0 && onFastTrackSearchResult) {
+          onFastTrackSearchResult(found);
+        }
+      }).catch((err) => console.warn('Dashboard Fast-track error:', err));
+    }
+  }, [debouncedTableSearch, onFastTrackSearchResult]);
+
+  const [tableTipo, setTableTipo] = useState<string>('Todas');
+  const [tableStatus, setTableStatus] = useState<'ACTIVAS' | 'VENCIDAS' | 'TODAS'>('ACTIVAS');
   const [isTableExpanded, setIsTableExpanded] = useState(true);
   const [alertModalItem, setAlertModalItem] = useState<LicitacionItem | null>(null);
 
-  // Compute Stats
-  const totalVigentes = licitaciones.length;
-  const ultimos7Dias = licitaciones.filter((item) => item.esUltimos7Dias);
-  const urgentes = licitaciones.filter((item) => item.diasRestantes <= 3 && item.diasRestantes >= 0);
-  const postulacionesEnCurso = postulaciones.filter((p) => p.estadoPostulacion !== 'Adjudicada' && p.estadoPostulacion !== 'Desestimada');
+  const safeLicitaciones = useMemo(() => licitaciones || [], [licitaciones]);
+  const safePostulaciones = useMemo(() => postulaciones || [], [postulaciones]);
 
-  const montoTotalLicitado = licitaciones.reduce(
-    (acc, curr) => acc + (curr.montoEstimadoClp || 0),
-    0
-  );
+  // Compute Stats dynamically with isItemExpired
+  const activas = useMemo(() => safeLicitaciones.filter((item) => item && !isItemExpired(item)), [safeLicitaciones]);
+  const vencidas = useMemo(() => safeLicitaciones.filter((item) => item && isItemExpired(item)), [safeLicitaciones]);
 
-  // Filter active extracted items with diasRestantes > 0
-  const activeExtractedItems = licitaciones.filter((item) => item.diasRestantes > 0);
+  const ultimos7Dias = useMemo(() => activas.filter((item) => item?.esUltimos7Dias), [activas]);
+  const urgentes = useMemo(() => activas.filter((item) => (item?.diasRestantes ?? 99) <= 3 && (item?.diasRestantes ?? -1) >= 0), [activas]);
+  const postulacionesEnCurso = useMemo(() => safePostulaciones.filter((p) => p && p.estadoPostulacion !== 'Adjudicada' && p.estadoPostulacion !== 'Desestimada'), [safePostulaciones]);
 
-  const filteredTableItems = activeExtractedItems.filter((item) => {
-    if (tableSearch.trim() && !matchesDeepSearch(item, tableSearch)) {
-      return false;
-    }
-    if (tableTipo !== 'TODOS' && !matchesFlexibleTipo(item.tipo, tableTipo, item.codigo)) {
-      return false;
-    }
-    return true;
-  });
+  const montoTotalLicitado = useMemo(() => activas.reduce((acc, curr) => {
+    const val = typeof curr?.monto === 'number' ? curr.monto : (typeof curr?.montoEstimadoClp === 'number' ? curr.montoEstimadoClp : Number(curr?.monto || curr?.montoEstimadoClp || 0));
+    return acc + (isNaN(val) ? 0 : val);
+  }, 0), [activas]);
+
+  // High performance filtered table items with deferred search input to prevent input lag
+  const filteredTableItems = useMemo(() => {
+    return safeLicitaciones.filter((item) => {
+      if (!item) return false;
+
+      const hasSearchQuery = Boolean(debouncedTableSearch && debouncedTableSearch.trim());
+
+      // 1. Search across id, nombre, organism (case insensitive toLowerCase)
+      if (hasSearchQuery && !matchesSearchTerm(item, debouncedTableSearch)) {
+        return false;
+      }
+
+      // 2. Modality filter directly on tipo ("Todas", "Licitación", "Convenio Marco", "Compra Ágil")
+      if (tableTipo !== 'Todas' && tableTipo !== 'TODOS' && !matchesTipoExact(item.tipo, tableTipo)) {
+        return false;
+      }
+
+      // 3. Status filter if no search term active
+      if (!hasSearchQuery) {
+        const expired = isItemExpired(item);
+        if (tableStatus === 'ACTIVAS' && expired) return false;
+        if (tableStatus === 'VENCIDAS' && !expired) return false;
+      }
+
+      return true;
+    });
+  }, [safeLicitaciones, tableStatus, debouncedTableSearch, tableTipo]);
 
   return (
     <div className="space-y-8 pb-12">
@@ -97,33 +144,112 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             </h1>
             <p className="text-slate-300 text-sm leading-relaxed">
               Detección automatizada de Licitaciones, Convenio Marco y Compra Ágil.
-              Los procesos de los <strong className="text-amber-300">últimos 30 días</strong> se destacan como alta prioridad con sincronización directa a Google Calendar.
+              Los procesos de los <strong className="text-amber-300">últimos 30 días</strong> se destacan como alta prioridad con verificación dinámica de fechas de cierre.
             </p>
           </div>
 
           <div className="flex flex-wrap items-center gap-3">
             <button
-              onClick={openAuthModal}
-              className="flex items-center space-x-2 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-bold text-xs sm:text-sm px-4 py-2.5 rounded-xl shadow-lg transition transform active:scale-95"
-            >
-              <ShieldCheck className="w-4 h-4 text-cyan-200" />
-              <span>Conectar ClaveÚnica</span>
-            </button>
-            <button
               onClick={openReportsModal}
               className="flex items-center space-x-2 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white font-semibold text-xs sm:text-sm px-4 py-2.5 rounded-xl shadow-lg transition transform active:scale-95"
             >
-              <FileText className="w-4 h-4" />
+              <FileText className="w-4 h-4 text-blue-200" />
               <span>Exportar Reportes</span>
             </button>
+
             <button
-              onClick={() => onNavigateToRadar(false)}
-              className="flex items-center space-x-2 bg-slate-800 hover:bg-slate-700 text-cyan-300 font-semibold text-xs sm:text-sm px-4 py-2.5 rounded-xl border border-cyan-500/30 transition"
+              onClick={() => {
+                if (setActiveTab) {
+                  setActiveTab('compradores');
+                } else if (onNavigateToRadar) {
+                  onNavigateToRadar(false);
+                }
+              }}
+              className="flex items-center space-x-2 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-bold text-xs sm:text-sm px-4 py-2.5 rounded-xl shadow-lg transition transform active:scale-95"
             >
-              <Clock className="w-4 h-4 text-cyan-400" />
-              <span>Filtrar Últimos 30 Días</span>
+              <FileSpreadsheet className="w-4 h-4 text-emerald-200" />
+              <span>Cargar CSV / Excel</span>
             </button>
           </div>
+        </div>
+      </div>
+
+      {/* Stats Grid */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        {/* Stat 1: Activas */}
+        <div className="bg-white rounded-2xl p-5 border border-slate-200/80 shadow-xs hover:shadow-md transition">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-semibold uppercase tracking-wider text-slate-500">
+              Oportunidades Activas
+            </span>
+            <div className="p-2.5 bg-emerald-50 text-emerald-600 rounded-xl">
+              <Briefcase className="w-5 h-5" />
+            </div>
+          </div>
+          <div className="mt-3 flex items-baseline space-x-2">
+            <span className="text-3xl font-extrabold text-slate-900">{activas.length}</span>
+            <span className="text-xs font-bold text-emerald-700 bg-emerald-100 px-2.5 py-0.5 rounded-md border border-emerald-200">
+              🟢 Vigentes
+            </span>
+          </div>
+          <p className="mt-2 text-xs text-slate-500">Excluye licitaciones vencidas o cerradas</p>
+        </div>
+
+        {/* Stat 2: Vencidas */}
+        <div className="bg-white rounded-2xl p-5 border border-slate-200/80 shadow-xs hover:shadow-md transition">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-semibold uppercase tracking-wider text-slate-500">
+              Oportunidades Vencidas
+            </span>
+            <div className="p-2.5 bg-rose-50 text-rose-600 rounded-xl">
+              <AlertTriangle className="w-5 h-5 text-rose-600" />
+            </div>
+          </div>
+          <div className="mt-3 flex items-baseline space-x-2">
+            <span className="text-3xl font-extrabold text-rose-600">{vencidas.length}</span>
+            <span className="text-xs font-bold text-rose-700 bg-red-500/10 border border-red-500/20 px-2.5 py-0.5 rounded-md">
+              🚨 Expiradas
+            </span>
+          </div>
+          <p className="mt-2 text-xs text-slate-500">Fecha de cierre cumplida (&lt; 0 días)</p>
+        </div>
+
+        {/* Stat 3: Por Vencer (≤3 Días) */}
+        <div className="bg-white rounded-2xl p-5 border border-slate-200/80 shadow-xs hover:shadow-md transition">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-semibold uppercase tracking-wider text-slate-500">
+              Por Vencer (≤3 Días)
+            </span>
+            <div className="p-2.5 bg-amber-50 text-amber-600 rounded-xl">
+              <Clock className="w-5 h-5" />
+            </div>
+          </div>
+          <div className="mt-3 flex items-baseline space-x-2">
+            <span className="text-3xl font-extrabold text-amber-600">{urgentes.length}</span>
+            <span className="text-xs font-bold text-amber-800 bg-amber-100 px-2 py-0.5 rounded-md">
+              Cierre Inminente
+            </span>
+          </div>
+          <p className="mt-2 text-xs text-slate-500">Requieren propuesta inmediata</p>
+        </div>
+
+        {/* Stat 4: Monto Estimado */}
+        <div className="bg-white rounded-2xl p-5 border border-slate-200/80 shadow-xs hover:shadow-md transition">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-semibold uppercase tracking-wider text-slate-500">
+              Monto Estimado Licitado
+            </span>
+            <div className="p-2.5 bg-blue-50 text-blue-600 rounded-xl">
+              <TrendingUp className="w-5 h-5" />
+            </div>
+          </div>
+          <div className="mt-3 flex items-baseline space-x-2">
+            <span className="text-2xl font-extrabold text-slate-900">
+              ${(montoTotalLicitado / 1000000).toFixed(0)}M
+            </span>
+            <span className="text-xs text-slate-500">CLP Aprox.</span>
+          </div>
+          <p className="mt-2 text-xs text-slate-500">{postulacionesEnCurso.length} postulaciones en cartera</p>
         </div>
       </div>
 
@@ -140,11 +266,16 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                   Oportunidades Extraídas (Vista de Tabla)
                 </h2>
                 <span className="bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 text-xs font-bold px-2.5 py-0.5 rounded-full">
-                  {filteredTableItems.length} Activas (últimos 30 días)
+                  {activas.length} Activas
                 </span>
+                {vencidas.length > 0 && (
+                  <span className="bg-red-500/10 text-red-400 border border-red-500/20 text-xs font-bold px-2.5 py-0.5 rounded-full">
+                    🚨 {vencidas.length} Vencidas
+                  </span>
+                )}
               </div>
               <p className="text-xs text-slate-300">
-                Listado de todas las oportunidades extraídas: ID, Nombre, Organismo, Tipo de Compra y Días Restantes
+                Listado consolidado de oportunidades con filtro dinámico por estado de vigencia
               </p>
             </div>
           </div>
@@ -172,30 +303,122 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         {isTableExpanded && (
           <div className="p-4 sm:p-5 space-y-4">
             {/* Table Filters bar */}
-            <div className="flex flex-col sm:flex-row items-center justify-between gap-3 bg-slate-50 p-3 rounded-xl border border-slate-200">
-              <div className="relative w-full sm:w-80">
-                <Search className="w-4 h-4 absolute left-3 top-2.5 text-slate-400" />
-                <input
-                  type="text"
-                  placeholder="Buscar por ID, nombre u organismo..."
-                  value={tableSearch}
-                  onChange={(e) => setTableSearch(e.target.value)}
-                  className="w-full pl-9 pr-3 py-1.5 text-xs font-medium border border-slate-300 rounded-lg bg-white focus:outline-hidden focus:ring-2 focus:ring-blue-500"
-                />
+            <div className="flex flex-col gap-3 bg-slate-50 p-3.5 rounded-xl border border-slate-200">
+              <div className="flex flex-col md:flex-row items-center justify-between gap-3">
+                <div className="relative w-full max-w-lg">
+                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none">
+                    🔍
+                  </span>
+                  <input
+                    type="text"
+                    value={tableSearch}
+                    onChange={(e) => setTableSearch(e.target.value)}
+                    placeholder="Buscar por código, título, organismo o palabra clave..."
+                    style={{
+                      color: '#0f172a',
+                      backgroundColor: '#ffffff',
+                      caretColor: '#0f172a',
+                      WebkitTextFillColor: '#0f172a',
+                      opacity: 1
+                    }}
+                    className="w-full pl-10 pr-4 py-2 border border-slate-300 rounded-lg text-sm font-medium focus:ring-2 focus:ring-blue-500 outline-none shadow-xs"
+                  />
+                  {tableSearch && (
+                    <button
+                      onClick={() => setTableSearch('')}
+                      className="absolute right-3 top-1/2 -translate-y-1/2 text-xs font-bold text-slate-400 hover:text-slate-600"
+                    >
+                      ✕
+                    </button>
+                  )}
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2 w-full md:w-auto justify-end">
+                  {/* Status Toggle Buttons */}
+                  <div className="flex items-center space-x-1 bg-white border border-slate-300 p-1 rounded-lg">
+                    <button
+                      onClick={() => setTableStatus('ACTIVAS')}
+                      className={`px-2.5 py-1 text-xs font-bold rounded-md transition ${
+                        tableStatus === 'ACTIVAS' ? 'bg-emerald-600 text-white shadow-2xs' : 'text-slate-600 hover:bg-slate-100'
+                      }`}
+                    >
+                      Activas ({activas.length})
+                    </button>
+                    <button
+                      onClick={() => setTableStatus('VENCIDAS')}
+                      className={`px-2.5 py-1 text-xs font-bold rounded-md transition ${
+                        tableStatus === 'VENCIDAS' ? 'bg-red-600 text-white shadow-2xs' : 'text-slate-600 hover:bg-slate-100'
+                      }`}
+                    >
+                      Vencidas ({vencidas.length})
+                    </button>
+                    <button
+                      onClick={() => setTableStatus('TODAS')}
+                      className={`px-2.5 py-1 text-xs font-bold rounded-md transition ${
+                        tableStatus === 'TODAS' ? 'bg-slate-800 text-white shadow-2xs' : 'text-slate-600 hover:bg-slate-100'
+                      }`}
+                    >
+                      Todas ({licitaciones.length})
+                    </button>
+                  </div>
+                </div>
               </div>
 
-              <div className="flex items-center space-x-2 w-full sm:w-auto">
-                <Filter className="w-4 h-4 text-slate-500" />
-                <select
-                  value={tableTipo}
-                  onChange={(e) => setTableTipo(e.target.value)}
-                  className="text-xs font-semibold border border-slate-300 rounded-lg bg-white px-3 py-1.5 text-slate-700 focus:outline-hidden focus:ring-2 focus:ring-blue-500"
-                >
-                  <option value="TODOS">Todos los Tipos de Compra</option>
-                  <option value="Licitacion Publica">Licitación Pública</option>
-                  <option value="Convenio Marco">Convenio Marco</option>
-                  <option value="Compra Agil">Compra Ágil</option>
-                </select>
+              {/* Process Type Filter Buttons Bar */}
+              <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-200/80">
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <span className="text-xs font-bold text-slate-600 mr-1 flex items-center">
+                    <Filter className="w-3.5 h-3.5 mr-1 text-blue-600" /> Modalidad:
+                  </span>
+
+                  <button
+                    onClick={() => setTableTipo('Todas')}
+                    className={`text-xs px-3 py-1.5 rounded-lg font-bold transition ${
+                      tableTipo === 'Todas' || tableTipo === 'TODOS'
+                        ? 'bg-blue-600 text-white shadow-xs'
+                        : 'bg-white border border-slate-300 text-slate-700 hover:bg-slate-100'
+                    }`}
+                  >
+                    Todas ({safeLicitaciones.length})
+                  </button>
+
+                  <button
+                    onClick={() => setTableTipo('Licitación')}
+                    className={`text-xs px-3 py-1.5 rounded-lg font-bold transition ${
+                      tableTipo === 'Licitación' || tableTipo === 'Licitacion'
+                        ? 'bg-blue-600 text-white shadow-xs'
+                        : 'bg-white border border-slate-300 text-slate-700 hover:bg-slate-100'
+                    }`}
+                  >
+                    📋 Licitación ({safeLicitaciones.filter(i => matchesTipoExact(i?.tipo, 'Licitación')).length})
+                  </button>
+
+                  <button
+                    onClick={() => setTableTipo('Convenio Marco')}
+                    className={`text-xs px-3 py-1.5 rounded-lg font-bold transition ${
+                      tableTipo === 'Convenio Marco'
+                        ? 'bg-emerald-600 text-white shadow-xs'
+                        : 'bg-white border border-slate-300 text-slate-700 hover:bg-slate-100'
+                    }`}
+                  >
+                    🤝 Convenio Marco ({safeLicitaciones.filter(i => matchesTipoExact(i?.tipo, 'Convenio Marco')).length})
+                  </button>
+
+                  <button
+                    onClick={() => setTableTipo('Compra Ágil')}
+                    className={`text-xs px-3 py-1.5 rounded-lg font-bold transition ${
+                      tableTipo === 'Compra Ágil' || tableTipo === 'Compra Agil'
+                        ? 'bg-purple-600 text-white shadow-xs'
+                        : 'bg-white border border-slate-300 text-slate-700 hover:bg-slate-100'
+                    }`}
+                  >
+                    ⚡ Compra Ágil ({safeLicitaciones.filter(i => matchesTipoExact(i?.tipo, 'Compra Ágil')).length})
+                  </button>
+                </div>
+
+                <div className="text-xs font-medium text-slate-500">
+                  Mostrando <strong className="text-slate-900">{filteredTableItems.length}</strong> resultados
+                </div>
               </div>
             </div>
 
@@ -209,7 +432,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                     <th className="py-3 px-4">Organismo</th>
                     <th className="py-3 px-4">Tipo de Compra</th>
                     <th className="py-3 px-4">F. Cierre (Chile CLT)</th>
-                    <th className="py-3 px-4 text-center">Tiempo Restante</th>
+                    <th className="py-3 px-4 text-center">Estado / Restante</th>
                     <th className="py-3 px-4 text-right">ACCIONES</th>
                   </tr>
                 </thead>
@@ -217,20 +440,22 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                   {filteredTableItems.length === 0 ? (
                     <tr>
                       <td colSpan={7} className="py-8 text-center text-slate-500 font-medium">
-                        No se encontraron oportunidades activas con los filtros aplicados.
+                        No se encontraron oportunidades en este filtro.
                       </td>
                     </tr>
                   ) : (
-                    filteredTableItems.map((item) => {
-                      const timeInfo = calculateChileRemainingTime(item.fechaCierre);
+                    filteredTableItems.slice(0, 100).map((item) => {
+                      const expired = isItemExpired(item);
+                      const fc = extractFechaCierre(item) || item.fechaCierre;
+                      const timeInfo = calculateChileRemainingTime(fc);
                       return (
                         <tr
                           key={item.codigo}
-                          className="hover:bg-slate-100/90 cursor-pointer transition-colors duration-200"
+                          className={`hover:bg-slate-100/90 transition-colors duration-200 ${expired ? 'bg-red-50/20' : ''}`}
                         >
                           <td className="py-3 px-4 font-mono font-bold text-slate-900 whitespace-nowrap">
                             <span className="bg-slate-100 border border-slate-200 px-2 py-0.5 rounded text-[11px]">
-                              {item.codigo}
+                              {cleanOfficialId(item.codigo)}
                             </span>
                           </td>
                           <td className="py-3 px-4 font-semibold text-slate-800 max-w-xs sm:max-w-md">
@@ -238,73 +463,79 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                               {cleanTextPrefixes(item.nombre)}
                             </p>
                           </td>
-                          <td className="py-3 px-4 font-medium text-slate-600 whitespace-nowrap">
+                          <td className="max-w-[220px] truncate pr-4 text-slate-700 font-medium">
                             {item.cliente}
                           </td>
-                          <td className="py-3 px-4 whitespace-nowrap">
+                          <td className="w-[120px] text-left whitespace-nowrap">
                             <span
-                              className={`px-2 py-0.5 rounded font-bold text-[11px] ${
+                              className={`inline-block px-2.5 py-1 text-xs font-semibold rounded-md ${
                                 item.tipo === 'Compra Agil'
                                   ? 'bg-purple-100 text-purple-800'
                                   : item.tipo === 'Convenio Marco'
-                                  ? 'bg-teal-100 text-teal-800'
+                                  ? 'bg-emerald-100 text-emerald-700'
                                   : 'bg-blue-100 text-blue-800'
                               }`}
                             >
                               {item.tipo}
                             </span>
                           </td>
-                          <td className="py-3 px-4 whitespace-nowrap text-slate-800 font-mono font-semibold text-xs">
-                            {formatChileDateTime(item.fechaCierre)}
+                          <td className={`py-3 px-4 whitespace-nowrap font-mono font-semibold text-xs ${expired ? 'text-red-600' : 'text-slate-800'}`}>
+                            {formatChileDateTime(fc)}
                           </td>
                           <td className="py-3 px-4 text-center whitespace-nowrap">
-                            <span
-                              className={`inline-flex items-center px-2.5 py-1 rounded-full font-bold text-xs ${
-                                timeInfo.dias <= 3
-                                  ? 'bg-rose-100 text-rose-700 border border-rose-200'
-                                  : 'bg-emerald-100 text-emerald-800 border border-emerald-200'
-                              }`}
-                            >
-                              ⏳ {timeInfo.badgeText}
-                            </span>
+                            {expired ? (
+                              <span className="inline-flex items-center px-2.5 py-1 rounded-full font-bold text-xs bg-red-500/10 text-red-600 border border-red-500/20">
+                                🔴 VENCIDA (Cerrada)
+                              </span>
+                            ) : (
+                              <span
+                                className={`inline-flex items-center px-2.5 py-1 rounded-full font-bold text-xs ${
+                                  timeInfo.dias <= 3
+                                    ? 'bg-rose-100 text-rose-700 border border-rose-200'
+                                    : 'bg-emerald-100 text-emerald-800 border border-emerald-200'
+                                }`}
+                              >
+                                ⏳ {timeInfo.badgeText}
+                              </span>
+                            )}
                           </td>
                           <td className="py-3 px-4 text-right whitespace-nowrap">
                             <div className="flex items-center justify-end space-x-1.5">
-                              <button
-                                onClick={() => setAlertModalItem(item)}
-                                className="inline-flex items-center space-x-1 bg-amber-50 hover:bg-amber-100 text-amber-800 font-bold px-2 py-1 rounded-lg border border-amber-200 transition text-[11px]"
-                                title="Crear Alerta Personalizada"
-                              >
-                                <Bell className="w-3.5 h-3.5 text-amber-600" />
-                                <span>🔔 Crear Alerta</span>
-                              </button>
-
                               <a
                                 href={getItemOfficialUrl(item)}
                                 target="_blank"
                                 rel="noopener noreferrer"
                                 className="inline-flex items-center space-x-1 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold px-2 py-1 rounded-lg border border-slate-200 transition text-[11px]"
-                                title="Ver Ficha Oficial Mercado Público"
                               >
-                                <ExternalLink className="w-3.5 h-3.5 text-slate-500" />
-                                <span>🔗 Ver Ficha</span>
+                                <span>Ficha</span>
                               </a>
 
                               <button
-                                onClick={() => onSelectLicitacionAI(item)}
+                                onClick={() => onSelectLicitacionAI?.(item)}
                                 className="bg-blue-600 hover:bg-blue-700 text-white px-2 py-1 rounded-lg font-bold text-[11px] transition shadow-xs"
-                                title="Evaluar con IA"
                               >
                                 Evaluar IA
                               </button>
 
                               <button
-                                onClick={() => onAddPostulacion(item)}
-                                className="bg-slate-100 hover:bg-slate-200 text-slate-700 px-2 py-1 rounded-lg font-bold text-[11px] transition"
-                                title="Añadir a Postulaciones"
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setAlertModalItem(item);
+                                }}
+                                className="px-3 py-1.5 bg-amber-500 hover:bg-amber-600 text-white rounded-md text-xs font-bold transition-colors"
                               >
-                                + Postular
+                                🔔 Alerta
                               </button>
+
+                              {!expired && (
+                                <button
+                                  onClick={() => onAddPostulacion?.(item)}
+                                  className="bg-slate-900 hover:bg-slate-800 text-white px-2 py-1 rounded-lg font-bold text-[11px] transition"
+                                >
+                                  + Postular
+                                </button>
+                              )}
                             </div>
                           </td>
                         </tr>
@@ -316,85 +547,6 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             </div>
           </div>
         )}
-      </div>
-
-      {/* Stats Grid */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        {/* Stat 1 */}
-        <div className="bg-white rounded-2xl p-5 border border-slate-200/80 shadow-xs hover:shadow-md transition">
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-semibold uppercase tracking-wider text-slate-500">
-              Oportunidades Vigentes
-            </span>
-            <div className="p-2.5 bg-blue-50 text-blue-600 rounded-xl">
-              <Briefcase className="w-5 h-5" />
-            </div>
-          </div>
-          <div className="mt-3 flex items-baseline space-x-2">
-            <span className="text-3xl font-extrabold text-slate-900">{totalVigentes}</span>
-            <span className="text-xs font-medium text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded-md">
-              Activas
-            </span>
-          </div>
-          <p className="mt-2 text-xs text-slate-500">Licitaciones, Convenios y Compra Ágil</p>
-        </div>
-
-        {/* Stat 2 */}
-        <div className="bg-white rounded-2xl p-5 border border-slate-200/80 shadow-xs hover:shadow-md transition">
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-semibold uppercase tracking-wider text-slate-500">
-              Destacados Últimos 7 Días
-            </span>
-            <div className="p-2.5 bg-amber-50 text-amber-600 rounded-xl">
-              <Flame className="w-5 h-5" />
-            </div>
-          </div>
-          <div className="mt-3 flex items-baseline space-x-2">
-            <span className="text-3xl font-extrabold text-amber-600">{ultimos7Dias.length}</span>
-            <span className="text-xs font-medium text-amber-700 bg-amber-100 px-2 py-0.5 rounded-md font-semibold">
-              Prioridad Alta
-            </span>
-          </div>
-          <p className="mt-2 text-xs text-slate-500">Publicadas o con cierres recientes</p>
-        </div>
-
-        {/* Stat 3 */}
-        <div className="bg-white rounded-2xl p-5 border border-slate-200/80 shadow-xs hover:shadow-md transition">
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-semibold uppercase tracking-wider text-slate-500">
-              Por Vencer (≤3 Días)
-            </span>
-            <div className="p-2.5 bg-rose-50 text-rose-600 rounded-xl">
-              <Clock className="w-5 h-5" />
-            </div>
-          </div>
-          <div className="mt-3 flex items-baseline space-x-2">
-            <span className="text-3xl font-extrabold text-rose-600">{urgentes.length}</span>
-            <span className="text-xs font-medium text-rose-700 bg-rose-100 px-2 py-0.5 rounded-md">
-              Cierre Inminente
-            </span>
-          </div>
-          <p className="mt-2 text-xs text-slate-500">Requieren propuesta inmediata</p>
-        </div>
-
-        {/* Stat 4 */}
-        <div className="bg-white rounded-2xl p-5 border border-slate-200/80 shadow-xs hover:shadow-md transition">
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-semibold uppercase tracking-wider text-slate-500">
-              Monto Estimado Licitado
-            </span>
-            <div className="p-2.5 bg-emerald-50 text-emerald-600 rounded-xl">
-              <TrendingUp className="w-5 h-5" />
-            </div>
-          </div>
-          <div className="mt-3 flex items-baseline space-x-2">
-            <span className="text-2xl font-extrabold text-slate-900">
-              ${(montoTotalLicitado / 1000000).toFixed(0)}M
-            </span>
-            <span className="text-xs text-slate-500">CLP Aprox.</span>
-          </div>
-          <p className="mt-2 text-xs text-slate-500">{postulacionesEnCurso.length} postulaciones en cartera</p>
-        </div>
       </div>
 
       {/* Prominent Section: PROCESOS DESTACADOS ÚLTIMOS 7 DÍAS */}
@@ -414,201 +566,90 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             onClick={() => onNavigateToRadar(true)}
             className="text-xs font-semibold text-blue-600 hover:text-blue-800 flex items-center space-x-1"
           >
-            <span>Ver todos ({ultimos7Dias.length})</span>
+            <span>Ver todos en Radar ({ultimos7Dias.length})</span>
             <ChevronRight className="w-4 h-4" />
           </button>
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
-          {ultimos7Dias.slice(0, 6).map((item) => (
-            <div
-              key={item.codigo}
-              className="bg-white rounded-2xl border border-amber-200/80 shadow-sm hover:shadow-md hover:border-amber-400 transition flex flex-col justify-between overflow-hidden relative"
-            >
-              {/* Highlight bar */}
-              <div className="h-1.5 bg-gradient-to-r from-amber-400 via-orange-500 to-rose-500" />
+          {ultimos7Dias.slice(0, 6).map((item) => {
+            const fc = extractFechaCierre(item) || item.fechaCierre;
+            const timeInfo = calculateChileRemainingTime(fc);
+            return (
+              <div
+                key={item.codigo}
+                className="bg-white rounded-2xl border border-amber-200/80 shadow-sm hover:shadow-md hover:border-amber-400 transition flex flex-col justify-between overflow-hidden relative"
+              >
+                <div className="h-1.5 bg-gradient-to-r from-amber-400 via-orange-500 to-rose-500" />
 
-              <div className="p-5 space-y-3">
-                {/* Header row */}
-                <div className="flex items-start justify-between gap-2">
-                  <div className="flex flex-wrap items-center gap-1.5">
-                    <span className="bg-slate-900 text-white font-mono text-xs font-bold px-2 py-0.5 rounded">
-                      {item.codigo}
-                    </span>
-                    <span
-                      className={`text-xs font-semibold px-2 py-0.5 rounded ${
-                        item.tipo === 'Compra Agil'
-                          ? 'bg-purple-100 text-purple-800'
-                          : item.tipo === 'Convenio Marco'
-                          ? 'bg-teal-100 text-teal-800'
-                          : 'bg-blue-100 text-blue-800'
-                      }`}
-                    >
-                      {item.tipo}
-                    </span>
-                  </div>
-
-                  <span
-                    className={`text-xs font-bold px-2.5 py-1 rounded-full whitespace-nowrap ${
-                      item.diasRestantes <= 3
-                        ? 'bg-rose-100 text-rose-700 border border-rose-200'
-                        : 'bg-amber-100 text-amber-800 border border-amber-200'
-                    }`}
-                  >
-                    ⏳ {item.diasRestantes} días
-                  </span>
-                </div>
-
-                {/* Cliente & Title */}
-                <div>
-                  <p className="text-xs font-bold text-slate-500 uppercase tracking-wide truncate">
-                    {item.cliente}
-                  </p>
-                  <h3 className="font-semibold text-slate-900 text-sm leading-snug line-clamp-2 mt-0.5">
-                    {item.nombre}
-                  </h3>
-                </div>
-
-                <p className="text-xs text-slate-600 line-clamp-2">
-                  {item.descripcion}
-                </p>
-
-                {/* Tags */}
-                <div className="flex flex-wrap gap-1 pt-1">
-                  {item.tags.slice(0, 3).map((tag) => (
-                    <span key={tag} className="text-[10px] bg-slate-100 text-slate-600 px-2 py-0.5 rounded font-medium">
-                      #{tag}
-                    </span>
-                  ))}
-                </div>
-              </div>
-
-              {/* Card Footer Actions */}
-              <div className="px-5 py-3 bg-slate-50 border-t border-slate-100 flex items-center justify-between text-xs">
-                <button
-                  onClick={() => openGoogleCalendar(item)}
-                  className="flex items-center space-x-1 text-slate-700 hover:text-blue-600 font-medium"
-                  title="Sincronizar con Google Calendar"
-                >
-                  <Calendar className="w-3.5 h-3.5 text-blue-500" />
-                  <span>Google Cal</span>
-                </button>
-
-                <div className="flex items-center space-x-2">
-                  <button
-                    onClick={() => onSelectLicitacionAI(item)}
-                    className="flex items-center space-x-1 text-indigo-600 hover:text-indigo-800 font-semibold"
-                  >
-                    <Sparkles className="w-3.5 h-3.5" />
-                    <span>IA Gemini</span>
-                  </button>
-
-                  <button
-                    onClick={() => onAddPostulacion(item)}
-                    className="flex items-center space-x-1 bg-blue-600 hover:bg-blue-700 text-white font-medium px-2.5 py-1 rounded-lg transition"
-                  >
-                    <Plus className="w-3.5 h-3.5" />
-                    <span>Postular</span>
-                  </button>
-                </div>
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
-
-      {/* Postulaciones En Pipeline Summary & Quick Calendar Sync */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Pipeline Summary (2 cols) */}
-        <div className="lg:col-span-2 bg-white rounded-2xl border border-slate-200/80 p-6 shadow-xs space-y-4">
-          <div className="flex items-center justify-between">
-            <h3 className="font-bold text-slate-900 text-base flex items-center space-x-2">
-              <Briefcase className="w-5 h-5 text-blue-600" />
-              <span>Estado de Mis Postulaciones en Curso</span>
-            </h3>
-            <span className="text-xs text-slate-500 font-medium">
-              {postulacionesEnCurso.length} activas
-            </span>
-          </div>
-
-          <div className="space-y-3">
-            {postulacionesEnCurso.length === 0 ? (
-              <p className="text-sm text-slate-500 italic py-4 text-center">
-                No tienes postulaciones activas. Explora el buscador y haz clic en "Postular" en las licitaciones de tu interés.
-              </p>
-            ) : (
-              postulacionesEnCurso.map((post) => (
-                <div
-                  key={post.id}
-                  className="flex flex-col sm:flex-row sm:items-center justify-between p-3.5 bg-slate-50 rounded-xl border border-slate-200/60 gap-3"
-                >
-                  <div className="space-y-1">
-                    <div className="flex items-center space-x-2">
-                      <span className="font-mono text-xs font-bold text-slate-800 bg-white px-2 py-0.5 rounded border">
-                        {post.codigoLicitacion}
+                <div className="p-5 space-y-3">
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <span className="bg-slate-900 text-white font-mono text-xs font-bold px-2 py-0.5 rounded">
+                        {cleanOfficialId(item.codigo)}
                       </span>
-                      <span className="text-xs font-semibold text-blue-700 bg-blue-50 px-2 py-0.5 rounded-full">
-                        {post.estadoPostulacion}
+                      <span className="bg-blue-100 text-blue-800 text-xs font-semibold px-2 py-0.5 rounded">
+                        {item.tipo}
                       </span>
                     </div>
-                    <h4 className="font-semibold text-slate-900 text-sm">
-                      {post.licitacionNombre}
-                    </h4>
-                    <p className="text-xs text-slate-500">
-                      Responsable: <strong>{post.responsable}</strong> | Límite interno: {new Date(post.fechaLimiteInterna).toLocaleDateString('es-CL')}
-                    </p>
+
+                    <span className="bg-emerald-100 text-emerald-800 font-bold text-[11px] px-2 py-0.5 rounded-full">
+                      ⏳ {timeInfo.badgeText}
+                    </span>
                   </div>
 
-                  <div className="flex items-center space-x-2 self-end sm:self-center">
+                  <h3 className="font-bold text-slate-900 text-sm line-clamp-2 leading-snug">
+                    {cleanTextPrefixes(item.nombre)}
+                  </h3>
+
+                  <p className="text-xs text-slate-500 line-clamp-2">
+                    {cleanTextPrefixes(item.descripcion)}
+                  </p>
+
+                  <div className="pt-2 border-t border-slate-100 text-xs text-slate-600 flex justify-between">
+                    <span>Organismo:</span>
+                    <strong className="text-slate-800 truncate max-w-[180px]">{item.cliente}</strong>
+                  </div>
+                </div>
+
+                <div className="p-3 bg-slate-50 border-t border-slate-100 flex items-center justify-between">
+                  <a
+                    href={getItemOfficialUrl(item)}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-xs text-slate-700 font-bold hover:underline flex items-center space-x-1"
+                  >
+                    <ExternalLink className="w-3.5 h-3.5" />
+                    <span>Ver Ficha</span>
+                  </a>
+
+                  <div className="flex items-center space-x-1.5">
                     <button
-                      onClick={() => openGoogleCalendar(post)}
-                      className="flex items-center space-x-1 text-xs bg-white hover:bg-slate-100 text-slate-700 border border-slate-300 px-2.5 py-1.5 rounded-lg font-medium transition"
+                      onClick={() => onSelectLicitacionAI?.(item)}
+                      className="bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs px-2.5 py-1 rounded-lg"
                     >
-                      <Calendar className="w-3.5 h-3.5 text-blue-600" />
-                      <span>Sync Calendar</span>
+                      Evaluar IA
+                    </button>
+                    <button
+                      onClick={() => onAddPostulacion?.(item)}
+                      className="bg-slate-900 hover:bg-slate-800 text-white font-bold text-xs px-2.5 py-1 rounded-lg"
+                    >
+                      + Postular
                     </button>
                   </div>
                 </div>
-              ))
-            )}
-          </div>
-        </div>
-
-        {/* Quick Helper Box */}
-        <div className="bg-gradient-to-br from-slate-900 to-blue-950 text-white rounded-2xl p-6 shadow-md border border-slate-800 flex flex-col justify-between">
-          <div className="space-y-3">
-            <div className="w-10 h-10 rounded-xl bg-cyan-500/20 flex items-center justify-center text-cyan-300">
-              <Zap className="w-6 h-6" />
-            </div>
-            <h3 className="font-bold text-lg text-white">Sincronización Google Calendar</h3>
-            <p className="text-xs text-slate-300 leading-relaxed">
-              Agrega automáticamente eventos y alertas a tu Google Calendar o descarga archivos .ics para mantener las fechas de presentación y preguntas al día.
-            </p>
-          </div>
-
-          <div className="pt-6 space-y-2">
-            <button
-              onClick={openShareModal}
-              className="w-full bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-bold text-xs py-2.5 rounded-xl transition flex items-center justify-center space-x-2 shadow"
-            >
-              <Share2 className="w-4 h-4" />
-              <span>Compartir Oportunidades</span>
-            </button>
-            <p className="text-[11px] text-slate-400 text-center">
-              Exportación instantánea a PDF, WhatsApp o Correo
-            </p>
-          </div>
+              </div>
+            );
+          })}
         </div>
       </div>
 
-      {/* Alert Modal preloaded for selected row */}
-      {alertModalItem && (
+      {/* Create Alert Modal */}
+      {alertModalItem && onAddAlerta && (
         <CreateAlertModal
-          item={alertModalItem}
+          licitacion={alertModalItem}
           onClose={() => setAlertModalItem(null)}
-          onAddAlerta={(newRule) => {
-            if (onAddAlerta) onAddAlerta(newRule);
-          }}
+          onSave={onAddAlerta}
         />
       )}
     </div>

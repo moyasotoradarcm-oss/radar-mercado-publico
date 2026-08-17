@@ -10,37 +10,48 @@ import {
   FileCode,
   Sparkles
 } from 'lucide-react';
-import { LicitacionItem, Postulacion } from '../types';
+import { LicitacionItem, Postulacion, OrdenCompraItem } from '../types';
 import { generateMonthlyPDFReport } from '../lib/pdfReportGenerator';
 import { exportLicitacionesToExcel } from '../lib/excelExport';
 import { generateWordReport } from '../lib/docxReportGenerator';
 
 interface ReportsModalProps {
-  licitaciones: LicitacionItem[];
-  postulaciones: Postulacion[];
+  licitaciones?: LicitacionItem[];
+  postulaciones?: Postulacion[];
+  ordenesCompra?: OrdenCompraItem[];
+  data?: any[];
   onClose: () => void;
 }
 
 export const ReportsModal: React.FC<ReportsModalProps> = ({
-  licitaciones,
-  postulaciones,
+  licitaciones = [],
+  postulaciones = [],
+  ordenesCompra = [],
+  data,
   onClose
 }) => {
   const [mes, setMes] = useState('Agosto 2026');
   const dateStr = new Date().toLocaleDateString('es-CL').replace(/\//g, '-');
 
+  // Detecta dinámicamente si los datos vienen de Órdenes de Compra o Licitaciones
+  const itemsToAnalyze = data && data.length > 0 
+    ? data 
+    : (ordenesCompra && ordenesCompra.length > 0 ? ordenesCompra : licitaciones);
+
+  const total30Dias = itemsToAnalyze.length;
+
   const handleDownloadPDF = () => {
-    generateMonthlyPDFReport(licitaciones, postulaciones, mes);
+    generateMonthlyPDFReport(itemsToAnalyze, postulaciones, mes);
     onClose();
   };
 
   const handleExportExcel = () => {
-    exportLicitacionesToExcel(licitaciones, 'Reporte_MercadoPublico');
+    exportLicitacionesToExcel(itemsToAnalyze, 'Reporte_MercadoPublico');
     onClose();
   };
 
   const handleExportWordDoc = async () => {
-    await generateWordReport(licitaciones, postulaciones, mes);
+    await generateWordReport(itemsToAnalyze, postulaciones, mes);
     onClose();
   };
 
@@ -80,7 +91,7 @@ export const ReportsModal: React.FC<ReportsModalProps> = ({
             </div>
             <div className="flex justify-between">
               <span>Total Oportunidades Extraídas:</span>
-              <strong className="text-slate-900">{licitaciones.length}</strong>
+              <strong className="text-slate-900">{total30Dias}</strong>
             </div>
             <div className="flex justify-between">
               <span>Ejes Temáticos Clave:</span>

@@ -1,7 +1,28 @@
-import { LicitacionItem, Postulacion, AlertaRule, AlertaNotificacion, SET_PALABRAS_CLAVE_MASTER } from '../types';
-import { cleanTextPrefixes } from '../lib/searchUtils';
+import { LicitacionItem, Postulacion, AlertaRule, AlertaNotificacion, SET_PALABRAS_CLAVE_MASTER, OrdenCompraItem } from '../types';
+import { cleanTextPrefixes, createUnifiedOpportunity } from '../lib/searchUtils';
 
-const SEED_LICITACIONES: LicitacionItem[] = [
+const SEED_LICITACIONES_RAW = [
+  {
+    codigo: "5802363-9487AISP",
+    cliente: "SUBSECRETARÍA DEL MINISTERIO DE HACIENDA",
+    nombre: cleanTextPrefixes("Servicio de Integración Google Maps Platform, Visor Geográfico & GCP"),
+    descripcion: cleanTextPrefixes("Organismo: Subsecretaría del Ministerio de Hacienda | Contacto: María Elena Fuentes (Jefa de Unidad Digital) - Email: mfuentes@hacienda.cl - Tel: +56 2 2828 1000 - Comuna: Santiago"),
+    tipo: "Convenio Marco",
+    montoEstimadoClp: 45000000,
+    fechaPublicacion: "2026-08-01T10:00:00",
+    fechaCierre: "2026-08-28T18:00:00",
+    FechaFinPublicacion: "2026-08-28 18:00:00",
+    FechaCierreCotizacion: "2026-08-28 18:00:00",
+    diasRestantes: 15,
+    estado: "Publicada",
+    url: "https://www.mercadopublico.cl/BuscarLicitacion?codigo=5802363-9487AISP",
+    prioritario: true,
+    esUltimos7Dias: true,
+    tags: ["google maps", "visor geografico", "gcp", "convenio marco", "hacienda"],
+    materia: "Servicios de Tecnologías de la Información",
+    region: "Región Metropolitana de Santiago",
+    fechaActualizada: true,
+  },
   {
     codigo: "587-32-LE26",
     cliente: "MINISTERIO DE VIVIENDA Y URBANISMO (MINVU)",
@@ -10,11 +31,12 @@ const SEED_LICITACIONES: LicitacionItem[] = [
     tipo: "Licitacion",
     montoEstimadoClp: 180000000,
     fechaPublicacion: "2026-08-05T10:00:00",
-    fechaCierre: "2026-08-14T15:00:00",
+    fechaCierre: "2026-08-31T15:10:00",
+    FechaCierreRecepcionOfertas: "2026-08-31 15:10:00",
     fechaPreguntas: "2026-08-08T18:00:00",
     fechaRespuestas: "2026-08-10T17:00:00",
-    fechaAdjudicacion: "2026-08-25T16:00:00",
-    diasRestantes: 7,
+    fechaAdjudicacion: "2026-09-15T16:00:00",
+    diasRestantes: 21,
     estado: "Publicada",
     url: "https://www.mercadopublico.cl/BuscarLicitacion?codigo=587-32-LE26",
     prioritario: true,
@@ -31,11 +53,13 @@ const SEED_LICITACIONES: LicitacionItem[] = [
     descripcion: cleanTextPrefixes("Cotización Convenio Marco CM-5802363 para provisión de créditos Google Maps Platform API (Geocoding, Places, Directions), desarrollo de software, soporte especializado e integración con sistema de cuadrantes y Comisaría Virtual."),
     tipo: "Convenio Marco",
     montoEstimadoClp: 95000000,
-    fechaPublicacion: "2026-08-06T11:00:00",
-    fechaCierre: "2026-08-20T16:00:00",
-    fechaPreguntas: "2026-08-10T17:00:00",
-    fechaRespuestas: "2026-08-12T17:00:00",
-    diasRestantes: 13,
+    fechaPublicacion: "2026-08-01T11:00:00",
+    fechaCierre: "2026-08-11T16:00:00",
+    FechaFinPublicacion: "2026-08-11 16:00:00",
+    FechaCierreCotizacion: "2026-08-11 16:00:00",
+    fechaPreguntas: "2026-08-02T17:00:00",
+    fechaRespuestas: "2026-08-03T17:00:00",
+    diasRestantes: 0,
     estado: "Publicada",
     url: "https://www.mercadopublico.cl/BuscarLicitacion?codigo=5802363-9800AAID",
     prioritario: true,
@@ -99,7 +123,7 @@ const SEED_LICITACIONES: LicitacionItem[] = [
     fechaAdjudicacion: "2026-08-12T12:00:00",
     diasRestantes: 1,
     estado: "Publicada",
-    url: "https://www.mercadopublico.cl/BuscarLicitacion?codigo=5455-94-COT26",
+    url: "https://www.mercadopublico.cl/CompraAgil/busqueda?codigo=5455-94-COT26",
     prioritario: true,
     esUltimos7Dias: true,
     tags: ["compra agil", "licencias", "desarrollo", "ia", "workspace"],
@@ -139,7 +163,7 @@ const SEED_LICITACIONES: LicitacionItem[] = [
     fechaCierre: "2026-08-09T14:00:00",
     diasRestantes: 2,
     estado: "Publicada",
-    url: "https://www.mercadopublico.cl/BuscarLicitacion?codigo=3201-18-COT26",
+    url: "https://www.mercadopublico.cl/CompraAgil/busqueda?codigo=3201-18-COT26",
     prioritario: false,
     esUltimos7Dias: true,
     tags: ["compra agil", "web", "desarrollo", "mapas", "portal web"],
@@ -169,6 +193,8 @@ const SEED_LICITACIONES: LicitacionItem[] = [
     fechaActualizada: false,
   }
 ];
+
+const SEED_LICITACIONES: LicitacionItem[] = SEED_LICITACIONES_RAW.map(createUnifiedOpportunity);
 
 // Helper to generate a full dynamic catalog of 520 realistic Mercado Público records covering 30 days
 function generateFull500PlusCatalog(): LicitacionItem[] {
@@ -254,7 +280,7 @@ function generateFull500PlusCatalog(): LicitacionItem[] {
     }
   ];
 
-  const items: LicitacionItem[] = [...SEED_LICITACIONES];
+  const items: any[] = [...SEED_LICITACIONES];
 
   // Base date fixed around current date: 2026-08-08
   const baseTimestamp = new Date("2026-08-08T12:00:00").getTime();
@@ -317,7 +343,7 @@ function generateFull500PlusCatalog(): LicitacionItem[] {
     });
   }
 
-  return items;
+  return items.map(createUnifiedOpportunity);
 }
 
 export const INITIAL_LICITACIONES: LicitacionItem[] = generateFull500PlusCatalog();
@@ -424,3 +450,97 @@ export const INITIAL_NOTIFICACIONES: AlertaNotificacion[] = [
     tipo: "ALERTA_MATCH"
   }
 ];
+
+export const INITIAL_ORDENES_COMPRA: OrdenCompraItem[] = [
+  {
+    id: '931-144-AG26',
+    nombre: 'COMPRA ÁGIL: 931-75-COT26 Rack y soporte para discos pesas PCH Req.127',
+    organismo: 'INSTITUTO NACIONAL DE DEPORTES DE CHILE',
+    fecha: '2026-08-07',
+    monto: 2070000,
+    estado: 'Enviada a proveedor',
+    tipo: 'Orden de Compra'
+  },
+  {
+    id: '3447-2294-SE26',
+    nombre: 'Software de Operación y Gestión Administrativa para el Juzgado de Policía Local, Inspección Municipal y Oficina de Información de Reclamos y Sugerencias, con Servicio de Soporte y Mantención ID 3447-73-LP25',
+    organismo: 'MUNICIPALIDAD DE ALTO HOSPICIO',
+    fecha: '2026-08-07',
+    monto: 4194750,
+    estado: 'Enviada a proveedor',
+    tipo: 'Orden de Compra'
+  },
+  {
+    id: '1618-221-SE26',
+    nombre: 'Servicios de Soporte julio 2026',
+    organismo: 'DIRECCION DE PRESUPUESTOS MINISTERIO DE HACIENDA',
+    fecha: '2026-08-07',
+    monto: 48205161,
+    estado: 'Enviada a proveedor',
+    tipo: 'Orden de Compra'
+  },
+  {
+    id: '5418-175-SE26',
+    nombre: 'SERVICIO STREAMING Y SOPORTE AUDIOVISUAL',
+    organismo: 'GOBIERNO REGIONAL DE LOS RIOS',
+    fecha: '2026-08-07',
+    monto: 3400000,
+    estado: 'Aceptada',
+    tipo: 'Orden de Compra'
+  },
+  {
+    id: '1057402-8407-SE26',
+    nombre: '(5076) SERVICIO SOPORTE INFORMATICO PARA TECNOLOGIA DE LA INFORMACION Y COMUNICACIONES DEL HCM AGOSTO 2026',
+    organismo: 'HOSPITAL CLINICO DE MAGALLANES DR. LAUTARO NAVARRO AVARIA',
+    fecha: '2026-08-07',
+    monto: 14200000,
+    estado: 'Enviada a proveedor',
+    tipo: 'Orden de Compra'
+  },
+  {
+    id: '2989-451-SE26',
+    nombre: 'INSTALACIÓN SOPORTE TV Y PIZARRA CESFAM',
+    organismo: 'I MUNICIPALIDAD DE LOS MUERMOS',
+    fecha: '2026-08-07',
+    monto: 890000,
+    estado: 'Aceptada',
+    tipo: 'Orden de Compra'
+  },
+  {
+    id: '867990-430-AG26',
+    nombre: 'CC:102 - CDP 92292. ADQUISICIÓN SMART TV + SOPORTES. ID: 867990-382-COT26',
+    organismo: 'UNIVERSIDAD DE SANTIAGO DE CHILE',
+    fecha: '2026-08-07',
+    monto: 2100000,
+    estado: 'Aceptada',
+    tipo: 'Orden de Compra'
+  },
+  {
+    id: '1031847-16-SE26',
+    nombre: 'TIC - SOPORTE - ARRIENDO IMPRESORAS JULIO',
+    organismo: 'SERVICIO DE SALUD NUBLE',
+    fecha: '2026-08-07',
+    monto: 5600000,
+    estado: 'Aceptada',
+    tipo: 'Orden de Compra'
+  },
+  {
+    id: '1238177-131-AG26',
+    nombre: 'SERVICIO SOPORTE TI: 1238177-92-COT26',
+    organismo: 'ASOCIACION DE MUNICIPIOS METROPOLITANOS PARA LA SE',
+    fecha: '2026-08-07',
+    monto: 4300000,
+    estado: 'Aceptada',
+    tipo: 'Orden de Compra'
+  },
+  {
+    id: '1057508-2148-SE26',
+    nombre: 'TIC - SOPORTE - ARRIENDO EQUIPOS COMP (25)',
+    organismo: 'SERVICIO DE SALUD NUBLE',
+    fecha: '2026-08-07',
+    monto: 9800000,
+    estado: 'Aceptada',
+    tipo: 'Orden de Compra'
+  }
+];
+

@@ -9,19 +9,21 @@ import {
   Settings,
   Sparkles,
   Share2,
-  ShieldCheck
+  ShieldCheck,
+  Building2
 } from 'lucide-react';
 import { AlertaNotificacion } from '../types';
 
 interface HeaderProps {
-  activeTab: 'dashboard' | 'radar' | 'postulaciones' | 'calendar' | 'alertas';
-  setActiveTab: (tab: 'dashboard' | 'radar' | 'postulaciones' | 'calendar' | 'alertas') => void;
+  activeTab: 'dashboard' | 'radar' | 'ordenescompra' | 'oc' | 'postulaciones' | 'calendar' | 'compradores' | 'alertas' | 'alerts';
+  setActiveTab: (tab: any) => void;
   notificaciones: AlertaNotificacion[];
+  setNotificaciones?: React.Dispatch<React.SetStateAction<AlertaNotificacion[]>>;
   onMarkAllNotifsRead?: () => void;
-  openSettings: () => void;
-  openReportsModal: () => void;
-  openShareModal: () => void;
-  openAuthModal: () => void;
+  openSettings?: () => void;
+  openReportsModal?: () => void;
+  openShareModal?: () => void;
+  openAuthModal?: () => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -34,7 +36,7 @@ export const Header: React.FC<HeaderProps> = ({
   openShareModal,
   openAuthModal
 }) => {
-  const unreadCount = notificaciones.filter((n) => !n.leida).length;
+  const unreadCount = (notificaciones || []).filter((n) => n && !n.leida).length;
 
   const handleAlertsClick = () => {
     setActiveTab('alertas');
@@ -92,6 +94,18 @@ export const Header: React.FC<HeaderProps> = ({
             </button>
 
             <button
+              onClick={() => setActiveTab('ordenescompra')}
+              className={`flex items-center space-x-2 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
+                activeTab === 'ordenescompra' || activeTab === 'oc'
+                  ? 'bg-emerald-600 text-white shadow'
+                  : 'text-slate-300 hover:text-white hover:bg-slate-800'
+              }`}
+            >
+              <FileSpreadsheet className="w-4 h-4 text-emerald-400" />
+              <span>Órdenes de Compra</span>
+            </button>
+
+            <button
               onClick={() => setActiveTab('postulaciones')}
               className={`flex items-center space-x-2 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
                 activeTab === 'postulaciones'
@@ -116,6 +130,18 @@ export const Header: React.FC<HeaderProps> = ({
             </button>
 
             <button
+              onClick={() => setActiveTab('compradores')}
+              className={`flex items-center space-x-2 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
+                activeTab === 'compradores'
+                  ? 'bg-blue-600 text-white shadow'
+                  : 'text-slate-300 hover:text-white hover:bg-slate-800'
+              }`}
+            >
+              <Building2 className="w-4 h-4 text-cyan-400" />
+              <span>Directorio Compradores</span>
+            </button>
+
+            <button
               onClick={handleAlertsClick}
               className={`flex items-center space-x-2 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
                 activeTab === 'alertas'
@@ -132,44 +158,6 @@ export const Header: React.FC<HeaderProps> = ({
               )}
             </button>
           </nav>
-
-          {/* Quick Actions & Settings */}
-          <div className="flex items-center space-x-2">
-            <button
-              onClick={openAuthModal}
-              className="flex items-center space-x-1.5 bg-gradient-to-r from-blue-600 to-cyan-600 hover:from-blue-500 hover:to-cyan-500 text-white font-bold px-3 py-1.5 rounded-lg text-xs shadow transition active:scale-95"
-              title="Conectar Cuenta Mercado Público / ClaveÚnica"
-            >
-              <ShieldCheck className="w-4 h-4 text-cyan-200" />
-              <span>Conectar ClaveÚnica</span>
-            </button>
-
-            <button
-              onClick={openReportsModal}
-              className="flex items-center space-x-1 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 px-3 py-1.5 rounded-lg text-xs font-semibold transition"
-              title="Exportar Reportes PDF / Word / Excel"
-            >
-              <FileSpreadsheet className="w-4 h-4 text-emerald-400" />
-              <span className="hidden lg:inline">Exportar Reportes</span>
-            </button>
-
-            <button
-              onClick={openShareModal}
-              className="flex items-center space-x-1 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 px-3 py-1.5 rounded-lg text-xs font-semibold transition"
-              title="Compartir Licitaciones"
-            >
-              <Share2 className="w-4 h-4 text-cyan-400" />
-              <span className="hidden lg:inline">Compartir</span>
-            </button>
-
-            <button
-              onClick={openSettings}
-              className="p-2 text-slate-400 hover:text-white rounded-lg hover:bg-slate-800 transition"
-              title="Configuración API Ticket Mercado Público"
-            >
-              <Settings className="w-5 h-5" />
-            </button>
-          </div>
         </div>
       </div>
 

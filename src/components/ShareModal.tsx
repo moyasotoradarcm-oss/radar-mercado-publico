@@ -16,13 +16,13 @@ import { cleanTextPrefixes } from '../lib/searchUtils';
 
 interface ShareModalProps {
   item?: LicitacionItem;
-  allItems: LicitacionItem[];
+  allItems?: LicitacionItem[];
   onClose: () => void;
 }
 
 export const ShareModal: React.FC<ShareModalProps> = ({
   item,
-  allItems,
+  allItems = [],
   onClose
 }) => {
   const [copied, setCopied] = useState(false);
