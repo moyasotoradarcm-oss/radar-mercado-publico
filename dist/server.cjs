@@ -37619,7 +37619,6 @@ var require_main3 = __commonJS({
 // server.ts
 var import_express = __toESM(require_express2(), 1);
 var import_path = __toESM(require("path"), 1);
-var import_url = require("url");
 
 // node_modules/@supabase/supabase-js/dist/index.mjs
 var dist_exports = {};
@@ -45476,9 +45475,6 @@ function shouldShowDeprecationWarning() {
 if (shouldShowDeprecationWarning()) console.warn("\u26A0\uFE0F  Node.js 20 and below are deprecated and will no longer be supported in future versions of @supabase/supabase-js. Please upgrade to Node.js 22 or later. For more information, visit: https://github.com/orgs/supabase/discussions/45715");
 
 // server.ts
-var import_meta = {};
-var __filename = (0, import_url.fileURLToPath)(import_meta.url);
-var __dirname = import_path.default.dirname(__filename);
 var app = (0, import_express.default)();
 app.use(import_express.default.json());
 var PORT = process.env.PORT || 8080;
@@ -45513,7 +45509,7 @@ app.delete("/api/empresas/:id", async (req, res) => {
     res.status(400).json({ error: err.message });
   }
 });
-var distPath = import_path.default.join(__dirname, "..", "dist");
+var distPath = import_path.default.join(process.cwd(), "dist");
 app.use(import_express.default.static(distPath));
 app.get("*", (req, res) => {
   res.sendFile(import_path.default.join(distPath, "index.html"));

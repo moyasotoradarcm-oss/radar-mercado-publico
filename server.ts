@@ -1,10 +1,6 @@
 import express from 'express';
 import path from 'path';
-import { fileURLToPath } from 'url';
 import { createClient } from '@supabase/supabase-js';
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
 
 const app = express();
 app.use(express.json());
@@ -47,7 +43,7 @@ app.delete('/api/empresas/:id', async (req, res) => {
 });
 
 // --- SERVIR FRONTEND ESTÁTICO DE VITE ---
-const distPath = path.join(__dirname, '..', 'dist');
+const distPath = path.join(process.cwd(), 'dist');
 app.use(express.static(distPath));
 
 app.get('*', (req, res) => {
