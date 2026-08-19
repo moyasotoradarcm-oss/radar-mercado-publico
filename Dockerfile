@@ -2,21 +2,21 @@ FROM node:20-alpine
 
 WORKDIR /app
 
-# Copiar manifiestos de dependencias
+# Copiar manifiestos
 COPY package*.json ./
 
-# Instalar todas las dependencias
-RUN npm ci || npm install
+# Instalar dependencias
+RUN npm install
 
-# Copiar el resto del código del proyecto
+# Copiar código fuente
 COPY . .
 
-# Compilar tanto el cliente (Vite) como el servidor (esbuild)
+# Compilar proyecto (Vite + esbuild)
 RUN npm run build
 
-# Exponer el puerto por defecto
+# Puerto dinámico de Cloud Run
 ENV PORT=8080
 EXPOSE 8080
 
-# Comando para iniciar el servidor compilado
+# Comando exacto de inicio
 CMD ["node", "dist/server.cjs"]
