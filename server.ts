@@ -1,5 +1,10 @@
 import express from 'express';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import { createClient } from '@supabase/supabase-js';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const app = express();
 app.use(express.json());
@@ -9,7 +14,7 @@ const supabaseUrl = process.env.SUPABASE_URL || '';
 const supabaseKey = process.env.SUPABASE_ANON_KEY || '';
 const supabase = createClient(supabaseUrl, supabaseKey);
 
-// GET: Obtener empresas desde Supabase
+// --- ENDPOINTS API EMPRESAS ---
 app.get('/api/empresas', async (req, res) => {
   try {
     const { data, error } = await supabase.from('empresas').select('*');
@@ -20,7 +25,6 @@ app.get('/api/empresas', async (req, res) => {
   }
 });
 
-// POST (+): Adicionar empresa en Supabase
 app.post('/api/empresas', async (req, res) => {
   try {
     const { data, error } = await supabase.from('empresas').insert([req.body]).select();
@@ -31,7 +35,6 @@ app.post('/api/empresas', async (req, res) => {
   }
 });
 
-// DELETE (-): Eliminar empresa por ID en Supabase
 app.delete('/api/empresas/:id', async (req, res) => {
   try {
     const { id } = req.params;
@@ -41,6 +44,14 @@ app.delete('/api/empresas/:id', async (req, res) => {
   } catch (err: any) {
     res.status(400).json({ error: err.message });
   }
+});
+
+// --- SERVIR FRONTEND ESTÁTICO DE VITE ---
+const distPath = path.join(__dirname, '..', 'dist');
+app.use(express.static(distPath));
+
+app.get('*', (req, res) => {
+  res.sendFile(path.join(distPath, 'index.html'));
 });
 
 app.listen(PORT, () => {
