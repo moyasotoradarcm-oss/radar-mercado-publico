@@ -5,7 +5,8 @@ import { createClient } from '@supabase/supabase-js';
 const app = express();
 app.use(express.json());
 
-const PORT = process.env.PORT || 8080;
+// Leer el puerto asignado dinámicamente por Cloud Run (ej: 3000 u 8080)
+const PORT = Number(process.env.PORT) || 8080;
 const supabaseUrl = process.env.SUPABASE_URL || '';
 const supabaseKey = process.env.SUPABASE_ANON_KEY || '';
 const supabase = createClient(supabaseUrl, supabaseKey);
@@ -50,6 +51,7 @@ app.get('*', (req, res) => {
   res.sendFile(path.join(distPath, 'index.html'));
 });
 
-app.listen(PORT, () => {
-  console.log(`Servidor iniciado en puerto ${PORT}`);
+// Forzar la vinculación con '0.0.0.0' para contenedores Docker/Cloud Run
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`Servidor iniciado correctamente en el puerto ${PORT}`);
 });

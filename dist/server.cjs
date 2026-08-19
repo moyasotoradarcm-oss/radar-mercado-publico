@@ -45477,7 +45477,7 @@ if (shouldShowDeprecationWarning()) console.warn("\u26A0\uFE0F  Node.js 20 and b
 // server.ts
 var app = (0, import_express.default)();
 app.use(import_express.default.json());
-var PORT = process.env.PORT || 8080;
+var PORT = Number(process.env.PORT) || 8080;
 var supabaseUrl = process.env.SUPABASE_URL || "";
 var supabaseKey = process.env.SUPABASE_ANON_KEY || "";
 var supabase = createClient(supabaseUrl, supabaseKey);
@@ -45514,8 +45514,8 @@ app.use(import_express.default.static(distPath));
 app.get("*", (req, res) => {
   res.sendFile(import_path.default.join(distPath, "index.html"));
 });
-app.listen(PORT, () => {
-  console.log(`Servidor iniciado en puerto ${PORT}`);
+app.listen(PORT, "0.0.0.0", () => {
+  console.log(`Servidor iniciado correctamente en el puerto ${PORT}`);
 });
 /*! Bundled license information:
 
