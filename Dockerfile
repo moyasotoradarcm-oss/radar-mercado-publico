@@ -1,22 +1,15 @@
-FROM node:20-alpine
-
+FROM node:22-slim AS builder
 WORKDIR /app
-
-# Copiar manifiestos
-COPY package*.json ./
-
-# Instalar dependencias
-RUN npm install
-
-# Copiar código fuente
 COPY . .
-
-# Compilar proyecto (Vite + esbuild)
+RUN npm install --include=dev
 RUN npm run build
 
-# Puerto dinámico de Cloud Run
+FROM node:22-slim AS runner
+WORKDIR /app
+ENV NODE_ENV=production
 ENV PORT=8080
+COPY package*.json ./
+RUN npm install --only=production --ignore-scripts
+COPY --from=builder /app/dist ./dist
 EXPOSE 8080
-
-# Comando exacto de inicio
 CMD ["node", "dist/server.cjs"]
