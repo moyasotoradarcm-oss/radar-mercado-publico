@@ -6,10 +6,7 @@ import {
   CalendarDays,
   Bell,
   FileSpreadsheet,
-  Settings,
   Sparkles,
-  Share2,
-  ShieldCheck,
   Building2
 } from 'lucide-react';
 import { AlertaNotificacion } from '../types';
@@ -31,10 +28,6 @@ export const Header: React.FC<HeaderProps> = ({
   setActiveTab,
   notificaciones,
   onMarkAllNotifsRead,
-  openSettings,
-  openReportsModal,
-  openShareModal,
-  openAuthModal
 }) => {
   const unreadCount = (notificaciones || []).filter((n) => n && !n.leida).length;
 
@@ -45,184 +38,141 @@ export const Header: React.FC<HeaderProps> = ({
     }
   };
 
+  const navItems = [
+    {
+      key: 'dashboard',
+      label: 'Panel',
+      icon: <LayoutDashboard className="w-4 h-4 shrink-0" />,
+      isActive: activeTab === 'dashboard',
+      activeClass: 'bg-blue-600 text-white shadow',
+      onClick: () => setActiveTab('dashboard'),
+    },
+    {
+      key: 'radar',
+      label: 'Buscador Radar',
+      icon: <Search className="w-4 h-4 shrink-0" />,
+      isActive: activeTab === 'radar',
+      activeClass: 'bg-blue-600 text-white shadow',
+      onClick: () => setActiveTab('radar'),
+    },
+    {
+      key: 'ordenescompra',
+      label: 'Órdenes de Compra',
+      icon: <FileSpreadsheet className="w-4 h-4 shrink-0 text-emerald-400" />,
+      isActive: activeTab === 'ordenescompra' || activeTab === 'oc',
+      activeClass: 'bg-emerald-600 text-white shadow',
+      onClick: () => setActiveTab('ordenescompra'),
+    },
+    {
+      key: 'postulaciones',
+      label: 'Mis Postulaciones',
+      icon: <Kanban className="w-4 h-4 shrink-0" />,
+      isActive: activeTab === 'postulaciones',
+      activeClass: 'bg-blue-600 text-white shadow',
+      onClick: () => setActiveTab('postulaciones'),
+    },
+    {
+      key: 'calendar',
+      label: 'Calendario',
+      icon: <CalendarDays className="w-4 h-4 shrink-0" />,
+      isActive: activeTab === 'calendar',
+      activeClass: 'bg-blue-600 text-white shadow',
+      onClick: () => setActiveTab('calendar'),
+    },
+    {
+      key: 'compradores',
+      label: 'Compradores',
+      icon: <Building2 className="w-4 h-4 shrink-0 text-cyan-400" />,
+      isActive: activeTab === 'compradores',
+      activeClass: 'bg-blue-600 text-white shadow',
+      onClick: () => setActiveTab('compradores'),
+    },
+    {
+      key: 'historial-ia',
+      label: 'Historial IA',
+      icon: <Sparkles className="w-4 h-4 shrink-0 text-indigo-400" />,
+      isActive: activeTab === 'historial-ia',
+      activeClass: 'bg-indigo-600 text-white shadow',
+      onClick: () => setActiveTab('historial-ia'),
+    },
+    {
+      key: 'alertas',
+      label: 'Alertas',
+      icon: <Bell className="w-4 h-4 shrink-0" />,
+      isActive: activeTab === 'alertas' || activeTab === 'alerts',
+      activeClass: 'bg-blue-600 text-white shadow',
+      onClick: handleAlertsClick,
+      badge: unreadCount,
+    },
+  ];
+
   return (
     <header className="sticky top-0 z-30 bg-slate-900 border-b border-slate-800 text-white shadow-lg">
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-        <div className="flex items-center justify-between h-16">
-          {/* Brand / Logo */}
-          <div className="flex items-center space-x-3 cursor-pointer" onClick={() => setActiveTab('dashboard')}>
-            <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-blue-600 to-cyan-500 flex items-center justify-center shadow-md shadow-blue-500/20">
-              <Sparkles className="w-6 h-6 text-white" />
+      <div className="max-w-[1600px] mx-auto px-4 sm:px-6">
+        <div className="flex flex-wrap items-center justify-between gap-3 py-2.5 min-h-[4rem]">
+          <div
+            className="flex items-center gap-3 shrink-0 cursor-pointer"
+            onClick={() => setActiveTab('dashboard')}
+          >
+            <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-blue-600 to-cyan-500 flex items-center justify-center shadow-md shadow-blue-500/20 shrink-0">
+              <Sparkles className="w-5 h-5 text-white" />
             </div>
-            <div>
-              <div className="flex items-center space-x-2">
-                <span className="font-bold text-lg tracking-tight text-white">Centro de Monitoreo & Oportunidades</span>
-                <span className="bg-blue-500/20 text-cyan-300 text-xs font-semibold px-2 py-0.5 rounded-full border border-cyan-500/30">
+            <div className="min-w-0">
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="font-bold text-base sm:text-lg tracking-tight text-white whitespace-nowrap">
+                  Centro de Monitoreo & Oportunidades
+                </span>
+                <span className="bg-blue-500/20 text-cyan-300 text-xs font-semibold px-2 py-0.5 rounded-full border border-cyan-500/30 whitespace-nowrap">
                   Bot & Radar
                 </span>
               </div>
-              <p className="text-xs text-slate-400 hidden sm:block">
+              <p className="text-[11px] text-slate-400 hidden xl:block whitespace-nowrap">
                 Licitaciones • Convenio Marco • Compra Ágil Chile
               </p>
             </div>
           </div>
 
-          {/* Navigation Tabs */}
-          <nav className="hidden md:flex items-center space-x-1">
-            <button
-              onClick={() => setActiveTab('dashboard')}
-              className={`flex items-center space-x-2 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
-                activeTab === 'dashboard'
-                  ? 'bg-blue-600 text-white shadow'
-                  : 'text-slate-300 hover:text-white hover:bg-slate-800'
-              }`}
-            >
-              <LayoutDashboard className="w-4 h-4" />
-              <span>Panel</span>
-            </button>
-
-            <button
-              onClick={() => setActiveTab('radar')}
-              className={`flex items-center space-x-2 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
-                activeTab === 'radar'
-                  ? 'bg-blue-600 text-white shadow'
-                  : 'text-slate-300 hover:text-white hover:bg-slate-800'
-              }`}
-            >
-              <Search className="w-4 h-4" />
-              <span>Buscador Radar</span>
-            </button>
-
-            <button
-              onClick={() => setActiveTab('ordenescompra')}
-              className={`flex items-center space-x-2 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
-                activeTab === 'ordenescompra' || activeTab === 'oc'
-                  ? 'bg-emerald-600 text-white shadow'
-                  : 'text-slate-300 hover:text-white hover:bg-slate-800'
-              }`}
-            >
-              <FileSpreadsheet className="w-4 h-4 text-emerald-400" />
-              <span>Órdenes de Compra</span>
-            </button>
-
-            <button
-              onClick={() => setActiveTab('postulaciones')}
-              className={`flex items-center space-x-2 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
-                activeTab === 'postulaciones'
-                  ? 'bg-blue-600 text-white shadow'
-                  : 'text-slate-300 hover:text-white hover:bg-slate-800'
-              }`}
-            >
-              <Kanban className="w-4 h-4" />
-              <span>Mis Postulaciones</span>
-            </button>
-
-            <button
-              onClick={() => setActiveTab('calendar')}
-              className={`flex items-center space-x-2 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
-                activeTab === 'calendar'
-                  ? 'bg-blue-600 text-white shadow'
-                  : 'text-slate-300 hover:text-white hover:bg-slate-800'
-              }`}
-            >
-              <CalendarDays className="w-4 h-4" />
-              <span>Calendario & Google Sync</span>
-            </button>
-
-            <button
-              onClick={() => setActiveTab('compradores')}
-              className={`flex items-center space-x-2 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
-                activeTab === 'compradores'
-                  ? 'bg-blue-600 text-white shadow'
-                  : 'text-slate-300 hover:text-white hover:bg-slate-800'
-              }`}
-            >
-              <Building2 className="w-4 h-4 text-cyan-400" />
-              <span>Directorio Compradores</span>
-            </button>
-
-            <button
-              onClick={() => setActiveTab('historial-ia')}
-              className={`flex items-center space-x-2 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
-                activeTab === 'historial-ia'
-                  ? 'bg-indigo-600 text-white shadow'
-                  : 'text-slate-300 hover:text-white hover:bg-slate-800'
-              }`}
-            >
-              <Sparkles className="w-4 h-4 text-indigo-400" />
-              <span>Historial IA</span>
-            </button>
-
-            <button
-              onClick={handleAlertsClick}
-              className={`flex items-center space-x-2 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
-                activeTab === 'alertas'
-                  ? 'bg-blue-600 text-white shadow'
-                  : 'text-slate-300 hover:text-white hover:bg-slate-800'
-              }`}
-            >
-              <Bell className="w-4 h-4" />
-              <span>Alertas</span>
-              {unreadCount > 0 && (
-                <span className="bg-rose-500 text-white text-xs font-bold px-1.5 py-0.2 rounded-full">
-                  {unreadCount}
-                </span>
-              )}
-            </button>
+          <nav className="hidden md:flex items-center gap-1 flex-wrap justify-end">
+            {navItems.map((item) => (
+              <button
+                key={item.key}
+                type="button"
+                onClick={item.onClick}
+                className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs lg:text-sm font-medium whitespace-nowrap shrink-0 transition-colors ${
+                  item.isActive
+                    ? item.activeClass
+                    : 'text-slate-300 hover:text-white hover:bg-slate-800'
+                }`}
+              >
+                {item.icon}
+                <span>{item.label}</span>
+                {typeof item.badge === 'number' && item.badge > 0 && (
+                  <span className="bg-rose-500 text-white text-[11px] font-bold px-1.5 py-0.5 rounded-full leading-none">
+                    {item.badge}
+                  </span>
+                )}
+              </button>
+            ))}
           </nav>
         </div>
       </div>
 
-      {/* Mobile Tab bar */}
-      <div className="md:hidden flex overflow-x-auto bg-slate-950 px-2 py-1.5 border-t border-slate-800 text-xs">
-        <button
-          onClick={() => setActiveTab('dashboard')}
-          className={`flex-1 py-1.5 px-2 text-center whitespace-nowrap rounded ${
-            activeTab === 'dashboard' ? 'bg-blue-600 text-white font-medium' : 'text-slate-400'
-          }`}
-        >
-          Panel
-        </button>
-        <button
-          onClick={() => setActiveTab('radar')}
-          className={`flex-1 py-1.5 px-2 text-center whitespace-nowrap rounded ${
-            activeTab === 'radar' ? 'bg-blue-600 text-white font-medium' : 'text-slate-400'
-          }`}
-        >
-          Buscador
-        </button>
-        <button
-          onClick={() => setActiveTab('postulaciones')}
-          className={`flex-1 py-1.5 px-2 text-center whitespace-nowrap rounded ${
-            activeTab === 'postulaciones' ? 'bg-blue-600 text-white font-medium' : 'text-slate-400'
-          }`}
-        >
-          Postulaciones
-        </button>
-        <button
-          onClick={() => setActiveTab('calendar')}
-          className={`flex-1 py-1.5 px-2 text-center whitespace-nowrap rounded ${
-            activeTab === 'calendar' ? 'bg-blue-600 text-white font-medium' : 'text-slate-400'
-          }`}
-        >
-          Calendario
-        </button>
-        <button
-          onClick={() => setActiveTab('historial-ia')}
-          className={`flex-1 py-1.5 px-2 text-center whitespace-nowrap rounded ${
-            activeTab === 'historial-ia' ? 'bg-indigo-600 text-white font-medium' : 'text-slate-400'
-          }`}
-        >
-          IA
-        </button>
-        <button
-          onClick={handleAlertsClick}
-          className={`flex-1 py-1.5 px-2 text-center whitespace-nowrap rounded ${
-            activeTab === 'alertas' ? 'bg-blue-600 text-white font-medium' : 'text-slate-400'
-          }`}
-        >
-          Alertas ({unreadCount})
-        </button>
+      <div className="md:hidden flex items-center gap-1 overflow-x-auto bg-slate-950 px-2 py-1.5 border-t border-slate-800 text-xs">
+        {navItems.map((item) => (
+          <button
+            key={item.key}
+            type="button"
+            onClick={item.onClick}
+            className={`py-1.5 px-2.5 text-center whitespace-nowrap shrink-0 rounded ${
+              item.isActive
+                ? `${item.activeClass} font-medium`
+                : 'text-slate-400 hover:text-white'
+            }`}
+          >
+            {item.label}
+            {typeof item.badge === 'number' && item.badge > 0 ? ` (${item.badge})` : ''}
+          </button>
+        ))}
       </div>
     </header>
   );

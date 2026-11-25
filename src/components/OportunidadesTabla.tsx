@@ -1,6 +1,6 @@
 import React, { useState, useMemo } from 'react';
 import { Oportunidad } from '../types';
-import { getItemOfficialUrl, cleanOfficialId, formatChileDateTime, formatFechaLimpia } from '../lib/dateUtils';
+import { cleanOfficialId, formatFechaLimpia } from '../lib/dateUtils';
 import { getFichaUrl } from '../lib/openFicha';
 import { OrganismoName } from './OrganismoName';
 import { Buscador } from './Buscador';
@@ -21,6 +21,9 @@ interface Props {
   onAddPostulacion?: (item: Oportunidad) => void;
 }
 
+const GRID_COLS_CLASS =
+  'grid grid-cols-[135px_minmax(220px,1.2fr)_minmax(210px,1.1fr)_115px_145px_270px] items-center gap-3 min-w-[1095px]';
+
 export const OportunidadesTabla: React.FC<Props> = ({
   oportunidades,
   items,
@@ -36,9 +39,11 @@ export const OportunidadesTabla: React.FC<Props> = ({
   const [selectedClusters, setSelectedClusters] = useState<KeywordClusterKey[]>([]);
 
   const toggleCluster = (cluster: KeywordClusterKey) => {
-    setSelectedClusters((current) => current.includes(cluster)
-      ? current.filter((selected) => selected !== cluster)
-      : [...current, cluster]);
+    setSelectedClusters((current) =>
+      current.includes(cluster)
+        ? current.filter((selected) => selected !== cluster)
+        : [...current, cluster]
+    );
   };
 
   const rawList = oportunidades || items || [];
@@ -46,19 +51,23 @@ export const OportunidadesTabla: React.FC<Props> = ({
   const dataList: Oportunidad[] = useMemo(() => {
     return rawList.map((it: any) => {
       const nombre = it.Nombre || it.nombre || 'Sin título';
-      const organismoRaw = it?.Comprador?.NombreOrganismo ||
+      const organismoRaw =
+        it?.Comprador?.NombreOrganismo ||
         it?.organismoNombre ||
         it?.organismo?.nombre ||
         it?.NombreOrganismo ||
         (typeof it?.organismo === 'string' ? it.organismo : null) ||
         it?.nombreOrganismo ||
         (typeof it?.Organismo === 'string' ? it.Organismo : null);
-      const organismo = typeof organismoRaw === 'string' &&
+      const organismo =
+        typeof organismoRaw === 'string' &&
         organismoRaw.trim() &&
         organismoRaw.trim() !== String(it.Nombre || it.nombre || '').trim() &&
-        !['sin organismo', 'organismo no especificado', 'organismo mercado público'].includes(organismoRaw.trim().toLowerCase())
-        ? organismoRaw.trim()
-        : 'Mercado Público (Ver Ficha)';
+        ![ 'sin organismo', 'organismo no especificado', 'organismo mercado público' ].includes(
+          organismoRaw.trim().toLowerCase()
+        )
+          ? organismoRaw.trim()
+          : 'Mercado Público (Ver Ficha)';
 
       return {
         ...it,
@@ -76,13 +85,16 @@ export const OportunidadesTabla: React.FC<Props> = ({
   }, [rawList]);
 
   const filteredData = useMemo(() => {
-    return dataList.filter(
-      (item) => {
-        if (!matchesSearchTerm(item, searchTerm)) return false;
-        if (selectedClusters.length && !matchKeywords(getItemSearchableText(item), selectedClusters).matches.length) return false;
-        return true;
+    return dataList.filter((item) => {
+      if (!matchesSearchTerm(item, searchTerm)) return false;
+      if (
+        selectedClusters.length &&
+        !matchKeywords(getItemSearchableText(item), selectedClusters).matches.length
+      ) {
+        return false;
       }
-    );
+      return true;
+    });
   }, [dataList, searchTerm, selectedClusters]);
 
   const handleOpenFicha = (e: React.MouseEvent<HTMLButtonElement>, item: Oportunidad) => {
@@ -131,184 +143,147 @@ export const OportunidadesTabla: React.FC<Props> = ({
   };
 
   return (
-    <div style={{ width: '100%', backgroundColor: '#0f172a', padding: '16px', borderRadius: '12px', color: '#ffffff' }}>
-      {/* BUSCADOR ULTRA RÁPIDO SIN LATENCIA CON DEBOUNCE LOCAL */}
-      <div style={{ marginBottom: '16px', display: 'flex', alignItems: 'center', gap: '12px' }}>
+    <div className="w-full bg-slate-900 p-4 rounded-xl text-white">
+      <div className="mb-4 flex flex-wrap items-center gap-3">
         <div className="relative w-full max-w-md">
           <Buscador
             onSearchChange={setSearchTerm}
             placeholder="Buscar por código (ej: 425-37-LP26), nombre u organismo..."
-            className="w-full px-4 py-2 bg-slate-900 text-white border border-slate-700 rounded-lg text-sm font-medium focus:ring-2 focus:ring-blue-500 focus:outline-none shadow-xs placeholder-slate-400"
+            className="w-full px-4 py-2 bg-slate-950 text-white border border-slate-700 rounded-lg text-sm font-medium focus:ring-2 focus:ring-blue-500 focus:outline-none shadow-xs placeholder-slate-400"
           />
         </div>
-        <span style={{ fontSize: '12px', color: '#94a3b8', fontFamily: 'monospace' }}>
+        <span className="text-xs text-slate-400 font-mono whitespace-nowrap">
           {(filteredData || []).length} de {(dataList || []).length}
         </span>
         <ReportExportActions items={filteredData} className="ml-auto" />
       </div>
-      <KeywordClusterFilter selectedClusters={selectedClusters} onToggle={toggleCluster} className="mb-3" />
 
-      {/* CONTENEDOR GRID DE ANCHOS ESTRICTOS (ELIMINA EL ESPACIO SOBRANTE) */}
-      <div style={{ width: '100%', overflowX: 'auto', border: '1px solid #1e293b', borderRadius: '8px' }}>
-        {/* ENCABEZADO */}
-        <div
-          className="grid grid-cols-[130px_200px_200px_110px_150px_auto] items-center gap-2"
-          style={{
-            backgroundColor: '#1e293b',
-            padding: '10px 12px',
-            borderBottom: '1px solid #334155',
-            fontSize: '12px',
-            fontWeight: 'bold',
-            color: '#94a3b8',
-          }}
-        >
-          <div>ID (CÓDIGO)</div>
-          <div>NOMBRE</div>
-          <div>ORGANISMO</div>
-          <div style={{ textAlign: 'center' }}>TIPO</div>
-          <div>F. CIERRE</div>
-          <div style={{ textAlign: 'right' }}>ACCIONES</div>
-        </div>
+      <KeywordClusterFilter
+        selectedClusters={selectedClusters}
+        onToggle={toggleCluster}
+        className="mb-3"
+      />
 
-        {/* FILAS DE DATOS */}
-        <div style={{ fontSize: '13px' }}>
-          {(filteredData || []).length === 0 ? (
-            <div style={{ padding: '32px', textAlign: 'center', color: '#64748b', fontSize: '14px', backgroundColor: '#0f172a' }}>
-              {searchTerm ? `No se encontraron resultados para "${searchTerm}"` : 'No se encontraron oportunidades registradas.'}
-            </div>
-          ) : (
-            (filteredData || []).map((item) => {
-              const organismoCandidate = [
-                item?.Comprador?.NombreOrganismo,
-                item?.NombreOrganismo,
-                item?.organismoNombre,
-                (item as any)?.organismo?.nombre,
-                item?.organismo,
-                item?.nombreOrganismo,
-                typeof item?.Organismo === 'string' ? item.Organismo : null
-              ].find((value) =>
-                typeof value === 'string' &&
-                value.trim() &&
-                value.trim() !== String(item.Nombre || item.nombre || '').trim() &&
-                !['sin organismo', 'organismo no especificado', 'organismo mercado público'].includes(value.trim().toLowerCase())
-              );
-              const organismoDisplay = organismoCandidate || 'Mercado Público (Ver Ficha)';
+      <div className="w-full overflow-x-auto border border-slate-800 rounded-lg">
+        <div className="min-w-[1095px]">
+          <div
+            className={`${GRID_COLS_CLASS} bg-slate-800 px-3 py-2.5 border-b border-slate-700 text-xs font-bold text-slate-300`}
+          >
+            <div>ID (CÓDIGO)</div>
+            <div>NOMBRE</div>
+            <div>ORGANISMO</div>
+            <div className="text-center">TIPO</div>
+            <div>F. CIERRE</div>
+            <div className="text-right pr-1">ACCIONES</div>
+          </div>
 
-              return (
-              <div
-                key={item.id || Math.random()}
-                className="grid grid-cols-[130px_200px_200px_110px_150px_auto] items-center gap-2"
-                style={{
-                  padding: '10px 12px',
-                  borderBottom: '1px solid #1e293b',
-                  backgroundColor: '#0f172a',
-                }}
-              >
-                {/* 1. ID */}
-                <div style={{ fontFamily: 'monospace', color: '#cbd5e1', fontWeight: 'bold', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                  {cleanOfficialId(item.id)}
-                </div>
-
-                {/* 2. NOMBRE */}
-                <div style={{ color: '#f1f5f9', paddingRight: '10px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={item.nombre}>
-                  {item.nombre}
-                </div>
-
-                {/* 3. ORGANISMO */}
-                <div className="max-w-[200px] truncate pr-4 text-slate-300" title={organismoDisplay}>
-                  <OrganismoName item={item} fallback={organismoDisplay} />
-                </div>
-
-                {/* 4. TIPO DE COMPRA */}
-                <div className="w-[110px] text-left">
-                  <span className="inline-block px-2.5 py-1 text-xs font-semibold rounded-md bg-emerald-100 text-emerald-700">
-                    {item.tipo}
-                  </span>
-                </div>
-
-                {/* 5. FECHA CIERRE */}
-                <div style={{ fontFamily: 'monospace', fontSize: '12px', color: '#cbd5e1', whiteSpace: 'nowrap' }}>
-                  {formatFechaLimpia(item.fecha_cierre)}
-                </div>
-
-                {/* 6. ACCIONES CON EL BOTÓN DE ALERTA OBLIGATORIO */}
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: '6px' }}>
-                  {/* Botón IA */}
-                  <button
-                    type="button"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handleEvaluar(item);
-                    }}
-                    style={{
-                      padding: '5px 9px',
-                      backgroundColor: '#9333ea',
-                      color: '#ffffff',
-                      border: 'none',
-                      borderRadius: '4px',
-                      fontSize: '11px',
-                      fontWeight: 'bold',
-                      cursor: 'pointer',
-                    }}
-                  >
-                    ✨ IA
-                  </button>
-
-                  {/* Botón Alerta */}
-                  <button
-                    type="button"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handleAlerta(item);
-                    }}
-                    style={{
-                      padding: '5px 9px',
-                      backgroundColor: '#d97706',
-                      color: '#ffffff',
-                      border: 'none',
-                      borderRadius: '4px',
-                      fontSize: '11px',
-                      fontWeight: 'bold',
-                      cursor: 'pointer',
-                    }}
-                  >
-                    🔔 Alerta
-                  </button>
-
-                  {/* Botones Ficha y Postular */}
-                  <button
-                    type="button"
-                    onClick={(e) => handleOpenFicha(e, item)}
-                    className="bg-orange-600 hover:bg-orange-500 text-white font-medium px-3 py-1.5 rounded-lg text-xs shadow-sm transition-colors"
-                  >
-                    Ficha ↗
-                  </button>
-                  {onAddPostulacion && (
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onAddPostulacion(item);
-                      }}
-                      style={{
-                        padding: '5px 9px',
-                        backgroundColor: '#2563eb',
-                        color: '#ffffff',
-                        border: 'none',
-                        borderRadius: '4px',
-                        fontSize: '11px',
-                        fontWeight: 'bold',
-                        cursor: 'pointer',
-                      }}
-                    >
-                      Postular
-                    </button>
-                  )}
-                </div>
+          <div className="text-[13px] divide-y divide-slate-800">
+            {(filteredData || []).length === 0 ? (
+              <div className="p-8 text-center text-slate-400 text-sm bg-slate-950">
+                {searchTerm
+                  ? `No se encontraron resultados para "${searchTerm}"`
+                  : 'No se encontraron oportunidades registradas.'}
               </div>
-              );
-            })
-          )}
+            ) : (
+              (filteredData || []).map((item, idx) => {
+                const organismoCandidate = [
+                  item?.Comprador?.NombreOrganismo,
+                  item?.NombreOrganismo,
+                  item?.organismoNombre,
+                  (item as any)?.organismo?.nombre,
+                  item?.organismo,
+                  item?.nombreOrganismo,
+                  typeof item?.Organismo === 'string' ? item.Organismo : null,
+                ].find(
+                  (value) =>
+                    typeof value === 'string' &&
+                    value.trim() &&
+                    value.trim() !== String(item.Nombre || item.nombre || '').trim() &&
+                    ![ 'sin organismo', 'organismo no especificado', 'organismo mercado público' ].includes(
+                      value.trim().toLowerCase()
+                    )
+                );
+                const organismoDisplay = organismoCandidate || 'Mercado Público (Ver Ficha)';
+
+                return (
+                  <div
+                    key={item.id || `${idx}`}
+                    className={`${GRID_COLS_CLASS} px-3 py-2.5 bg-slate-950 hover:bg-slate-900/80 transition-colors`}
+                  >
+                    <div
+                      className="font-mono text-slate-200 font-bold truncate"
+                      title={cleanOfficialId(item.id)}
+                    >
+                      {cleanOfficialId(item.id)}
+                    </div>
+
+                    <div className="text-slate-100 pr-2 truncate" title={item.nombre}>
+                      {item.nombre}
+                    </div>
+
+                    <div className="pr-2 truncate text-slate-300" title={organismoDisplay}>
+                      <OrganismoName item={item} fallback={organismoDisplay} />
+                    </div>
+
+                    <div className="text-center truncate">
+                      <span className="inline-block px-2.5 py-1 text-xs font-semibold rounded-md bg-emerald-100 text-emerald-700 whitespace-nowrap">
+                        {item.tipo}
+                      </span>
+                    </div>
+
+                    <div className="font-mono text-xs text-slate-300 whitespace-nowrap">
+                      {formatFechaLimpia(item.fecha_cierre)}
+                    </div>
+
+                    <div className="flex items-center justify-end gap-1.5 shrink-0 whitespace-nowrap">
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleEvaluar(item);
+                        }}
+                        className="px-2.5 py-1 bg-purple-600 hover:bg-purple-500 text-white rounded text-[11px] font-bold whitespace-nowrap shrink-0 cursor-pointer transition-colors"
+                      >
+                        ✨ IA
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleAlerta(item);
+                        }}
+                        className="px-2.5 py-1 bg-amber-600 hover:bg-amber-500 text-white rounded text-[11px] font-bold whitespace-nowrap shrink-0 cursor-pointer transition-colors"
+                      >
+                        🔔 Alerta
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={(e) => handleOpenFicha(e, item)}
+                        className="px-2.5 py-1 bg-orange-600 hover:bg-orange-500 text-white font-medium rounded text-[11px] whitespace-nowrap shrink-0 shadow-xs transition-colors cursor-pointer"
+                      >
+                        Ficha ↗
+                      </button>
+
+                      {onAddPostulacion && (
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onAddPostulacion(item);
+                          }}
+                          className="px-2.5 py-1 bg-blue-600 hover:bg-blue-500 text-white rounded text-[11px] font-bold whitespace-nowrap shrink-0 cursor-pointer transition-colors"
+                        >
+                          Postular
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                );
+              })
+            )}
+          </div>
         </div>
       </div>
     </div>
