@@ -1,6 +1,7 @@
 import express from "express";
 import path from "path";
 import fs from "fs";
+import { createHash, timingSafeEqual } from "node:crypto";
 import { createServer as createViteServer } from "vite";
 import { GoogleGenAI } from "@google/genai";
 import dotenv from "dotenv";
@@ -10,6 +11,7 @@ import * as XLSX from "xlsx";
 
 import { createClient } from "@supabase/supabase-js";
 import { perfilEmpresaTexto } from "./perfilEmpresa";
+import { classifyMercadoPublicoProcess } from "./src/lib/processClassification";
 
 dotenv.config();
 
@@ -20,11 +22,120 @@ const supabase = supabaseUrl && supabaseKey ? createClient(supabaseUrl, supabase
 
 
 const app = express();
-const PORT = 3000;
+const PORT = Number(process.env.PORT) || 3000;
+const IS_PRODUCTION = process.env.NODE_ENV === "production";
+const ENABLE_MP_SCRAPER = process.env.ENABLE_MP_SCRAPER === "true";
+
+app.disable("x-powered-by");
+app.set("trust proxy", 1);
+
+app.use((_req, res, next) => {
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("X-Frame-Options", "DENY");
+  res.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
+  if (IS_PRODUCTION) res.setHeader("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
+  next();
+});
+
+// Autenticación HTTP Basic para toda la app (frontend + API). /api/health queda libre para health checks.
+const APP_USER = process.env.APP_USER || "";
+const APP_PASSWORD = process.env.APP_PASSWORD || "";
+if (IS_PRODUCTION && (!APP_USER || APP_PASSWORD.length < 12)) {
+  console.error("❌ En producción debes definir APP_USER y APP_PASSWORD (mínimo 12 caracteres).");
+  process.exit(1);
+}
+
+function safeEqual(a: string, b: string): boolean {
+  const ha = createHash("sha256").update(a).digest();
+  const hb = createHash("sha256").update(b).digest();
+  return timingSafeEqual(ha, hb);
+}
+
+app.use((req, res, next) => {
+  if (!APP_USER || !APP_PASSWORD || req.path === "/api/health") return next();
+  const header = req.headers.authorization || "";
+  if (header.startsWith("Basic ")) {
+    const decoded = Buffer.from(header.slice(6), "base64").toString("utf-8");
+    const sep = decoded.indexOf(":");
+    const user = sep >= 0 ? decoded.slice(0, sep) : "";
+    const pass = sep >= 0 ? decoded.slice(sep + 1) : "";
+    if (safeEqual(user, APP_USER) && safeEqual(pass, APP_PASSWORD)) return next();
+  }
+  res.setHeader("WWW-Authenticate", 'Basic realm="Radar Mercado Publico", charset="UTF-8"');
+  return res.status(401).send("Autenticación requerida");
+});
+
+// Límite de peticiones en memoria por IP (suficiente para una sola instancia).
+function rateLimit(windowMs: number, max: number) {
+  const hits = new Map<string, { count: number; resetAt: number }>();
+  setInterval(() => {
+    const now = Date.now();
+    for (const [key, entry] of hits) if (entry.resetAt <= now) hits.delete(key);
+  }, windowMs).unref();
+  return (req: express.Request, res: express.Response, next: express.NextFunction) => {
+    const key = req.ip || "unknown";
+    const now = Date.now();
+    const entry = hits.get(key);
+    if (!entry || entry.resetAt <= now) {
+      hits.set(key, { count: 1, resetAt: now + windowMs });
+      return next();
+    }
+    entry.count++;
+    if (entry.count > max) {
+      res.setHeader("Retry-After", String(Math.ceil((entry.resetAt - now) / 1000)));
+      return res.status(429).json({ error: "Demasiadas solicitudes. Intente más tarde." });
+    }
+    return next();
+  };
+}
+
+app.use("/api", rateLimit(60 * 1000, 300));
+app.use("/api/ai", rateLimit(60 * 1000, 20));
+app.use("/api/evaluar-licitacion", rateLimit(60 * 1000, 20));
+app.use("/api/mp", rateLimit(10 * 60 * 1000, 10));
+app.use("/api/submit-2fa", rateLimit(10 * 60 * 1000, 10));
 
 // Mercado Público Cache
 const mpApiCache = new Map<string, { data: any; timestamp: number }>();
 const CACHE_TTL = 10 * 60 * 1000; // 10 minutes
+const aiAnalysisCache = new Map<string, { result: any; expiresAt: number }>();
+const AI_ANALYSIS_CACHE_TTL = 6 * 60 * 60 * 1000;
+const AI_FALLBACK_CACHE_TTL = 5 * 60 * 1000;
+
+function makeAiAnalysisCacheKey(licitacion: any, perfilEmpresa: string): string {
+  const cachePayload = JSON.stringify({
+    codigo: licitacion?.CodigoExterno || licitacion?.codigo || licitacion?.id,
+    nombre: licitacion?.Nombre || licitacion?.nombre,
+    organismo: licitacion?.Comprador?.NombreOrganismo || licitacion?.organismo || licitacion?.cliente,
+    descripcion: licitacion?.descripcion || licitacion?.Descripcion,
+    tipo: licitacion?.tipo,
+    monto: licitacion?.montoEstimadoClp || licitacion?.monto,
+    perfilEmpresa
+  });
+  return createHash('sha256').update(cachePayload).digest('hex');
+}
+
+function cacheAiAnalysis(cacheKey: string, result: any, ttl = AI_ANALYSIS_CACHE_TTL): void {
+  aiAnalysisCache.set(cacheKey, { result, expiresAt: Date.now() + ttl });
+  if (aiAnalysisCache.size > 300) {
+    const oldestKey = aiAnalysisCache.keys().next().value;
+    if (oldestKey) aiAnalysisCache.delete(oldestKey);
+  }
+}
+
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  let timeoutId: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_, reject) => {
+        timeoutId = setTimeout(() => reject(new Error('Gemini analysis timeout')), timeoutMs);
+      })
+    ]);
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId);
+  }
+}
 
 // Helper to handle transient Gemini API errors (e.g. 503, 429)
 export const withAIRetry = async <T>(fn: () => Promise<T>, maxRetries = 5, delayMs = 2000): Promise<T> => {
@@ -53,12 +164,12 @@ export const withAIRetry = async <T>(fn: () => Promise<T>, maxRetries = 5, delay
   throw new Error("Max retries reached");
 };
 
-app.use(express.json({ limit: "50mb" }));
-app.use(express.urlencoded({ extended: true, limit: "50mb" }));
+app.use(express.json({ limit: "2mb" }));
+app.use(express.urlencoded({ extended: true, limit: "2mb" }));
 
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 50 * 1024 * 1024 }
+  limits: { fileSize: 10 * 1024 * 1024 }
 });
 
 // ==========================================
@@ -71,7 +182,11 @@ if (process.env.DATABASE_URL) {
   try {
     pool = new Pool({
       connectionString: process.env.DATABASE_URL,
-      ssl: process.env.DATABASE_URL.includes("localhost") ? false : { rejectUnauthorized: false }
+      ssl: process.env.DATABASE_URL.includes("localhost")
+        ? false
+        : process.env.DATABASE_CA_CERT
+          ? { rejectUnauthorized: true, ca: process.env.DATABASE_CA_CERT.replace(/\\n/g, "\n") }
+          : { rejectUnauthorized: false }
     });
     console.log("🐘 Conectado exitosamente a la base de datos PostgreSQL en Supabase.");
   } catch (err) {
@@ -130,7 +245,6 @@ const DEFAULT_CONFIG = {
   keywords: "software, desarrollo, inteligencia artificial, google maps, gcp, cloud, bi",
   scrapingFrequency: "30 min",
   alertEmail: "alertas@empresa.cl",
-  ticket: process.env.MERCADO_PUBLICO_TICKET || "DA0DDB29-A6DB-4B60-A862-AFCAD7FC31F8",
   updatedAt: new Date().toISOString()
 };
 
@@ -138,7 +252,7 @@ function readConfig() {
   if (fs.existsSync(CONFIG_FILE)) {
     try {
       const raw = fs.readFileSync(CONFIG_FILE, "utf-8");
-      const parsed = JSON.parse(raw);
+      const { ticket: _legacyTicket, ...parsed } = JSON.parse(raw);
       return { ...DEFAULT_CONFIG, ...parsed };
     } catch (e) {
       console.warn("⚠️ Error leyendo config.json, usando valores por defecto.");
@@ -154,6 +268,8 @@ function readConfig() {
 }
 
 function writeConfig(data: any) {
+  const { ticket: _ignoredTicket, ...safeData } = data || {};
+  data = safeData;
   const current = readConfig();
   const updated = {
     ...current,
@@ -169,7 +285,24 @@ function writeConfig(data: any) {
 }
 
 // Default Mercado Público Ticket initialized from environment variable, config or fallback
-let currentMpTicket = process.env.MERCADOPUBLICO_TICKET || readConfig().ticket || "DA0DDB29-A6DB-4B60-A862-AFCAD7FC31F8";
+let currentMpTicket = (process.env.MERCADOPUBLICO_TICKET || process.env.MERCADO_PUBLICO_TICKET || "").trim();
+if (!currentMpTicket) {
+  console.warn("⚠️ MERCADOPUBLICO_TICKET no está configurado: la app no podrá consultar la API oficial.");
+}
+
+function maskTicket(ticket: string): string {
+  return ticket ? `${ticket.slice(0, 4)}…${ticket.slice(-4)}` : "";
+}
+
+function getTicketOrFail(res: express.Response): string | null {
+  if (currentMpTicket) return currentMpTicket;
+  res.status(503).json({
+    Listado: [],
+    Cantidad: 0,
+    warning: "Ticket de Mercado Público no configurado en el servidor (MERCADOPUBLICO_TICKET)."
+  });
+  return null;
+}
 
 // Middleware to disable response caching across API routes and force fresh responses
 app.use("/api", (_req, res, next) => {
@@ -186,7 +319,7 @@ app.get("/api/health", (_req, res) => {
 
 // System Configuration endpoints
 app.get("/api/config", (_req, res) => {
-  res.json(readConfig());
+  res.json({ ...readConfig(), ticket: maskTicket(currentMpTicket), ticketConfigured: Boolean(currentMpTicket) });
 });
 
 app.post("/api/config", (req, res) => {
@@ -198,26 +331,25 @@ app.post("/api/config", (req, res) => {
     ...(ticket !== undefined && { ticket: String(ticket).trim() })
   });
 
-  if (updated.ticket) {
-    currentMpTicket = updated.ticket;
+  if (typeof ticket === "string" && ticket.trim()) {
+    currentMpTicket = ticket.trim();
   }
 
-  res.json({ success: true, config: updated });
+  res.json({ success: true, config: { ...updated, ticket: maskTicket(currentMpTicket), ticketConfigured: Boolean(currentMpTicket) } });
 });
 
 // Settings endpoint to view/update ticket (backward compatibility)
 app.get("/api/settings/ticket", (_req, res) => {
-  const cfg = readConfig();
-  res.json({ ticket: cfg.ticket || currentMpTicket });
+  res.json({ ticket: maskTicket(currentMpTicket), configured: Boolean(currentMpTicket) });
 });
 
 app.post("/api/settings/ticket", (req, res) => {
   const { ticket } = req.body;
-  if (ticket && typeof ticket === "string") {
+  if (ticket && typeof ticket === "string" && ticket.trim()) {
+    // Solo en memoria hasta el próximo reinicio; el valor permanente va en MERCADOPUBLICO_TICKET.
     currentMpTicket = ticket.trim();
-    writeConfig({ ticket: currentMpTicket });
   }
-  res.json({ success: true, ticket: currentMpTicket });
+  res.json({ success: true, ticket: maskTicket(currentMpTicket), configured: Boolean(currentMpTicket) });
 });
 
 // Persistence for Mis Postulaciones
@@ -423,7 +555,8 @@ function mapOpportunityRecord(r: any) {
   if (!r || typeof r !== 'object') return null;
 
   // 1. Extraer ID (ID COTIZACIÓN || id_cotizacion || numero_de_la_orden_de_compra)
-  const idRaw = r['ID COTIZACIÓN'] || r['ID COTIZACION'] || r['id_cotizacion'] || r['ID_COTIZACION']
+  const idRaw = r.CodigoExterno || r.CodigoLicitacion || r.codigoLicitacion || r.Codigo ||
+    r['ID COTIZACIÓN'] || r['ID COTIZACION'] || r['id_cotizacion'] || r['ID_COTIZACION']
     || r['numero_de_la_orden_de_compra'] || r['numero_orden_compra']
     || r['code'] || r['codigo'] || r['id'];
   const idVal = cleanString(idRaw);
@@ -475,35 +608,11 @@ function mapOpportunityRecord(r: any) {
   }
 
   // Determinar Modalidad / Tipo
-  const hasIdCotizacion = Boolean(r['ID COTIZACIÓN'] || r['ID COTIZACION'] || r['id_cotizacion'] || r['ID_COTIZACION']);
-  const rawType = cleanString(r['tipo'] || r['type']);
-  const codeUpper = idVal.toUpperCase();
-  const titleUpper = titleVal.toUpperCase();
-
-  let typeVal = rawType;
-
-  if (
-    codeUpper.includes('-LP') ||
-    codeUpper.includes('-LE') ||
-    codeUpper.includes('-L1') ||
-    codeUpper.includes('-LQ') ||
-    codeUpper.includes('-LR') ||
-    codeUpper.includes('-LS') ||
-    codeUpper.includes('-E2') ||
-    codeUpper.includes('-L2')
-  ) {
-    typeVal = 'Licitacion';
-  } else if (hasIdCotizacion && !r['CodigoExterno']) {
-    typeVal = 'Convenio Marco';
-  } else if (!typeVal || typeVal === 'Orden de Compra') {
-    if (codeUpper.startsWith('CM-') || codeUpper.includes('AISP') || titleUpper.includes('CONVENIO MARCO') || titleUpper.includes('CONVENIO')) {
-      typeVal = 'Convenio Marco';
-    } else if (codeUpper.startsWith('CO-') || codeUpper.includes('COT') || titleUpper.includes('COMPRA AGIL') || titleUpper.includes('COMPRA ÁGIL')) {
-      typeVal = 'Compra Agil';
-    } else {
-      typeVal = 'Licitacion';
-    }
-  }
+  const classification = classifyMercadoPublicoProcess({
+    ...r,
+    tipo: r.tipo || r.type || r.tipo_compra || r.tipo_proceso || r['Tipo de Proceso'] || r.TipoLicitacion,
+    Nombre: titleVal
+  }, idVal);
 
   const statusVal = cleanString(r['estado'] || r['status'] || r['estado_oc']) || 'Publicada';
 
@@ -520,7 +629,9 @@ function mapOpportunityRecord(r: any) {
     contactPhone: contactPhoneVal,
     contactRole: contactRoleVal,
     location: locationVal,
-    type: typeVal,
+    type: classification.tipo,
+    tipo: classification.tipo,
+    tipo_compra: classification.tipo_compra,
     closingDate: closingDateVal,
     endDate: closingDateVal,
     status: statusVal,
@@ -540,9 +651,6 @@ function readOpportunitiesData(): any[] {
     } catch (e) {
       console.warn("⚠️ Error leyendo opportunities.json");
     }
-  }
-  if (records.length === 0) {
-    records = SEED_OPPORTUNITIES;
   }
   return records.map(mapOpportunityRecord).filter((item): item is NonNullable<typeof item> => item !== null);
 }
@@ -671,12 +779,85 @@ function readLocalCompradores(): any[] {
       console.warn("⚠️ Error leyendo compradores.json");
     }
   }
+  return [];
+}
+
+function normalizeBuyerRut(value: unknown): string {
+  return String(value || '').replace(/[^0-9k]/gi, '').toLowerCase();
+}
+
+function getLicitacionBuyerRut(item: any): string {
+  return String(
+    item?.Comprador?.RutUnidad ||
+    item?.Comprador?.RutOrganismo ||
+    item?.RutUnidad ||
+    item?.RutComprador ||
+    item?.RutOrganismo ||
+    ''
+  ).trim();
+}
+
+async function getBuyerNamesByRut(ruts: string[]): Promise<Map<string, string>> {
+  const normalizedRuts = Array.from(new Set(ruts.map(normalizeBuyerRut).filter(Boolean)));
+  const namesByRut = new Map<string, string>();
+  if (normalizedRuts.length === 0) return namesByRut;
+
   try {
-    fs.writeFileSync(COMPRADORES_FILE, JSON.stringify(SEED_COMPRADORES, null, 2), "utf-8");
-  } catch (e) {
-    // ignore
+    const buyers = pool
+      ? (await pool.query(
+          `SELECT rut_organismo, nombre_organismo FROM compradores WHERE regexp_replace(lower(rut_organismo), '[^0-9k]', '', 'g') = ANY($1::text[])`,
+          [normalizedRuts]
+        )).rows
+      : readLocalCompradores().filter((buyer) => normalizedRuts.includes(normalizeBuyerRut(buyer.rut_organismo)));
+
+    for (const buyer of buyers) {
+      const rut = normalizeBuyerRut(buyer.rut_organismo);
+      const name = cleanString(buyer.nombre_organismo);
+      if (rut && name) namesByRut.set(rut, name);
+    }
+  } catch (err) {
+    console.warn('No se pudo resolver el nombre del comprador desde el directorio local:', err);
   }
-  return [...SEED_COMPRADORES];
+
+  return namesByRut;
+}
+
+async function enrichLicitacionesWithBuyerNames(items: any[]): Promise<any[]> {
+  const namesByRut = await getBuyerNamesByRut(items.map(getLicitacionBuyerRut));
+
+  return items.map((item) => {
+    const title = cleanString(item?.Nombre || item?.nombre);
+    const candidates = [
+      item?.Comprador?.NombreOrganismo,
+      item?.NombreOrganismo,
+      item?.organismoNombre,
+      item?.organismo?.nombre,
+      typeof item?.organismo === 'string' ? item.organismo : ''
+    ].map(cleanString).filter((name) =>
+      name &&
+      name !== title &&
+      !['sin organismo', 'organismo no especificado', 'organismo público', 'mercado público (ver ficha)'].includes(name.toLowerCase())
+    );
+    const rut = normalizeBuyerRut(getLicitacionBuyerRut(item));
+    const unitName = cleanString(
+      item?.Comprador?.NombreUnidad ||
+      item?.UnidadCompra?.NombreUnidad ||
+      item?.UnidadCompra?.Nombre ||
+      (typeof item?.UnidadCompra === 'string' ? item.UnidadCompra : '') ||
+      item?.DescripcionUnidadCompra
+    );
+    const organismo = candidates[0] || namesByRut.get(rut) || (unitName !== title ? unitName : '') || '';
+    const comprador = item?.Comprador && typeof item.Comprador === 'object'
+      ? { ...item.Comprador, ...(organismo ? { NombreOrganismo: organismo } : {}) }
+      : organismo ? { NombreOrganismo: organismo } : item?.Comprador;
+
+    return {
+      ...item,
+      ...(comprador ? { Comprador: comprador } : {}),
+      organismo: organismo || 'Mercado Público (Ver Ficha)',
+      organismoNombre: organismo || undefined
+    };
+  });
 }
 
 function writeLocalCompradores(data: any[]) {
@@ -1501,7 +1682,7 @@ app.delete("/api/compradores/:id", async (req, res) => {
 
 // Helper for dynamic score calculation
 function computeDynamicMatchScore(item: any): number {
-  if (!item) return 72;
+  if (!item) return 0;
   const codigo = item.codigo || '';
   const nombre = item.nombre || '';
   const cliente = item.cliente || '';
@@ -1510,20 +1691,15 @@ function computeDynamicMatchScore(item: any): number {
 
   const fullText = `${codigo} ${nombre} ${cliente} ${desc} ${tagsStr}`.toLowerCase();
 
-  let baseScore = 52;
+  let baseScore = 20;
   if (fullText.match(/google|maps|api|gis|geolocaliza|visor/)) baseScore += 28;
   else if (fullText.match(/desarrollo|software|fábrica|sistema|evolutivo|portal|móvil/)) baseScore += 24;
   else if (fullText.match(/bi|power bi|datos|migración|cloud|gcp|aws|azure|arquitectura/)) baseScore += 21;
   else if (fullText.match(/gestor|documental|digitalización|bpm|firma digital/)) baseScore += 18;
   else if (fullText.match(/soporte|mantenimiento|licencia|consultoría|secops/)) baseScore += 14;
 
-  const hash = codigo.split('').reduce((acc: number, c: string) => acc + c.charCodeAt(0), 0);
-  const variance = (hash % 23) - 10; // -10 to +12
-
-  const daysBonus = item.diasRestantes <= 1 ? -6 : item.diasRestantes <= 3 ? 2 : 5;
-
-  const finalScore = Math.min(98, Math.max(45, baseScore + variance + daysBonus));
-  return finalScore;
+  // Puntaje heurístico solo por palabras clave (sin ruido aleatorio). No reemplaza la lectura de las bases.
+  return Math.min(100, Math.max(0, baseScore));
 }
 
 function createDynamicFallback(licitacion: any) {
@@ -1561,7 +1737,7 @@ function createDynamicFallback(licitacion: any) {
 
   return {
     matchScore: dynamicScore,
-    resumenEjecutivo: `Análisis de compatibilidad para el proceso ID ${cod} ("${cleanNombre}") de ${cliente}: Presenta una afinidad estimada del ${dynamicScore}%. El requerimiento encaja con los servicios tecnológicos de la empresa para la modalidad ${tipo}.`,
+    resumenEjecutivo: `⚠️ Evaluación automática SIN IA (Gemini no disponible). Proceso ${cod} ("${cleanNombre}") de ${cliente}, modalidad ${tipo}. Puntaje ${dynamicScore}% estimado solo por coincidencia de palabras clave; revise las bases antes de decidir.`,
     requisitos: reqList,
     requisitosClave: reqList,
     riesgos: riskList,
@@ -1582,48 +1758,45 @@ app.post("/api/ai/analyze", async (req, res) => {
       return res.status(400).json({ error: "Faltan datos de la licitación." });
     }
 
+    const profile = perfilEmpresa || "Empresa de Tecnología, Consultoría TI, Desarrollo de Software, Integración Cloud (GCP/AWS/Azure), Google Maps/GIS, Ciberseguridad y Analítica de Datos.";
+    const cacheKey = makeAiAnalysisCacheKey(licitacion, profile);
+    const cachedAnalysis = aiAnalysisCache.get(cacheKey);
+    if (cachedAnalysis && cachedAnalysis.expiresAt > Date.now()) {
+      return res.json({ ...cachedAnalysis.result, cacheable: true, cached: true });
+    }
+    if (cachedAnalysis) aiAnalysisCache.delete(cacheKey);
+
     if (!apiKey) {
-      return res.json(createDynamicFallback(licitacion));
+      const fallback = { ...createDynamicFallback(licitacion), cacheable: true, fallback: true };
+      cacheAiAnalysis(cacheKey, fallback, AI_FALLBACK_CACHE_TTL);
+      return res.json(fallback);
     }
 
     const ai = new GoogleGenAI({ apiKey });
 
     const prompt = `
-Analiza minuciosamente la siguiente oportunidad e indica la viabilidad y recomendación estratégica para postular:
-
-DATOS DE LA LICITACIÓN/COTIZACIÓN:
-- Código ID: ${licitacion.codigo}
-- Título/Requerimiento: ${licitacion.nombre}
-- Organismo Comprador: ${licitacion.cliente}
-- Descripción: ${licitacion.descripcion || "No especificada"}
-- Tipo de Proceso: ${licitacion.tipo}
-- Monto Estimado: ${licitacion.montoEstimadoClp ? `$${licitacion.montoEstimadoClp.toLocaleString('es-CL')} CLP` : "No informado"}
-- Plazo de Cierre: ${licitacion.diasRestantes} días restantes
-- Etiquetas/Tecnologías: ${licitacion.tags ? licitacion.tags.join(', ') : 'S/I'}
-
-PERFIL DE LA EMPRESA CONSULTORA:
-${perfilEmpresa || "Empresa de Tecnología, Consultoría TI, Desarrollo de Software, Integración Cloud (GCP/AWS/Azure), Google Maps/GIS, Ciberseguridad y Analítica de Datos."}
-
-INSTRUCCIONES CRÍTICAS:
-1. DIVERSIFICACIÓN DEL MATCH SCORE: Evalúa la afinidad tecnológica real entre el requerimiento y la empresa. Calcula un "matchScore" numérico entero verdaderamente variable entre 45 y 98 (porcentaje). NUNCA uses un número estático ni valores por defecto repetidos.
-2. CONTENIDO DINÁMICO ESPECÍFICO POR LICITACIÓN: En los puntos de "requisitos", "riesgos" y "recomendaciones", CITA elementos específicos del título ("${licitacion.nombre}"), la descripción o el organismo comprador ("${licitacion.cliente}") de la ficha activa, evitando respuestas genéricas repetidas.
-3. ESTRUCTURA OBLIGATORIA DE LA CARTA GANTT EN MARKDOWN: Basado en el plazo total exigido en la licitación, genera una tabla en Markdown con la siguiente estructura de fases y hitos para GEOSOLVE:
-| Fase / Hito del Proyecto | Entregables Claves | Período 1 | Período 2 | Período 3 | Período 4 |
-| :--- | :--- | :---: | :---: | :---: | :---: |
-| 1. Levantamiento y Arquitectura | Informe de Diagnóstico y Plan de Trabajo | ████ | | | |
-| 2. Configuración e Integración | Entorno GCP, APIs o Desarrollo Web listo | | ████ | | |
-| 3. Migración de Datos y Pruebas | Base de datos migrada y QA aprobado | | | ████ | |
-| 4. Capacitación y Soporte SLA | Manuales, Transferencia y Soporte activo | | | | ████ |
-Nota: Adapta los períodos (Semanas o Meses) según la duración total solicitada por el comprador.
-4. ESTRUCTURA DE SALIDA JSON ESTRICTO: Genera la salida según el esquema solicitado.
+Evalúa de forma breve la viabilidad de postular. Usa detalles concretos de esta licitación y del perfil empresarial.
+Licitación: ${JSON.stringify({
+  codigo: licitacion.codigo || licitacion.id,
+  nombre: licitacion.nombre,
+  organismo: licitacion.cliente || licitacion.organismo,
+  descripcion: licitacion.descripcion || 'No especificada',
+  tipo: licitacion.tipo,
+  montoCLP: licitacion.montoEstimadoClp || licitacion.monto || 'No informado',
+  diasRestantes: licitacion.diasRestantes,
+  tecnologias: licitacion.tags || []
+})}
+Perfil: ${profile}
+Responde solo el JSON del esquema. Mantén resumen en 2 frases; hasta 3 requisitos, 2 riesgos, 3 recomendaciones y 2 perfiles. Carta Gantt: máximo 4 filas concisas. Score entero 0-100 basado en evidencia, no inventes requisitos.
 `;
 
-    const response = await withAIRetry(() => ai.models.generateContent({
-      model: "gemini-3.7-flash",
+    const response = await withTimeout(ai.models.generateContent({
+      model: "gemini-3.5-flash-lite",
       contents: prompt,
       config: {
-        systemInstruction: perfilEmpresaTexto,
+        systemInstruction: "Evalúa licitaciones tecnológicas con criterios concretos. Responde únicamente JSON breve según el esquema.",
         responseMimeType: "application/json",
+        maxOutputTokens: 500,
         responseSchema: {
           type: "OBJECT",
           properties: {
@@ -1675,7 +1848,7 @@ Nota: Adapta los períodos (Semanas o Meses) según la duración total solicitad
           required: ["matchScore", "resumenEjecutivo", "requisitos", "riesgos", "recomendaciones", "cartaGantt"]
         }
       },
-    }));
+    }), 4700);
 
     let text =
       response?.text ||
@@ -1695,7 +1868,7 @@ Nota: Adapta los períodos (Semanas o Meses) según la duración total solicitad
     const fallback = createDynamicFallback(licitacion);
 
     const matchScore = typeof rawResult.matchScore === 'number' && !isNaN(rawResult.matchScore)
-      ? Math.min(98, Math.max(45, Math.round(rawResult.matchScore)))
+      ? Math.min(100, Math.max(0, Math.round(rawResult.matchScore)))
       : fallback.matchScore;
 
     const reqList = (Array.isArray(rawResult.requisitos) && rawResult.requisitos.length > 0)
@@ -1730,8 +1903,12 @@ Nota: Adapta los períodos (Semanas o Meses) según la duración total solicitad
       recomendaciones: recList,
       recomendacionesEstrategicas: recList,
       perfilesRequeridos: perfilesList,
-      cartaGantt: rawResult.cartaGantt || ""
+      cartaGantt: rawResult.cartaGantt || "",
+      cacheable: true,
+      fallback: false
     };
+
+    cacheAiAnalysis(cacheKey, finalResult);
 
     return res.json(finalResult);
   } catch (error: any) {
@@ -1740,7 +1917,12 @@ Nota: Adapta los períodos (Semanas o Meses) según la duración total solicitad
     } else {
       console.error("Error en Gemini AI Analyze:", error);
     }
-    return res.json(createDynamicFallback(req.body?.licitacion));
+    const licitacion = req.body?.licitacion;
+    const profile = req.body?.perfilEmpresa || "Empresa de Tecnología, Consultoría TI, Desarrollo de Software, Integración Cloud (GCP/AWS/Azure), Google Maps/GIS, Ciberseguridad y Analítica de Datos.";
+    const cacheKey = licitacion ? makeAiAnalysisCacheKey(licitacion, profile) : '';
+    const fallback = { ...createDynamicFallback(licitacion), cacheable: true, fallback: true };
+    if (cacheKey) cacheAiAnalysis(cacheKey, fallback, AI_FALLBACK_CACHE_TTL);
+    return res.json(fallback);
   }
 });
 
@@ -1794,7 +1976,8 @@ app.get("/api/calendar/ics", (req, res) => {
 // Proxy endpoint for Mercado Público API with headers & fallback
 app.get("/api/licitaciones/external", async (req, res) => {
   const { date, code } = req.query;
-  const ticket = currentMpTicket;
+  const ticket = getTicketOrFail(res);
+  if (!ticket) return;
 
   try {
     let targetUrl = "https://api.mercadopublico.cl/servicios/v1/publico/licitaciones.json";
@@ -1852,6 +2035,7 @@ app.get("/api/licitaciones/external", async (req, res) => {
     if (fetchRes.ok) {
       const data = await fetchRes.json();
       if (data && Array.isArray(data.Listado)) {
+        data.Listado = await enrichLicitacionesWithBuyerNames(data.Listado);
         data.Listado = data.Listado.map((item: any) => {
           const cod = String(item.CodigoLicitacion || item.codigo || '').toUpperCase();
           const isCot = cod.includes('COT') || cod.includes('AGIL');
@@ -1871,13 +2055,8 @@ app.get("/api/licitaciones/external", async (req, res) => {
             fechaCierreOficial = item.FechaCierreRecepcionOfertas || fechas.FechaCierreOfertas || fechas.FechaCierreRecepcionOfertas;
           }
 
-          if (cod.includes('5802363-9800AAID')) {
-            fechaCierreOficial = "2026-08-11 16:00:00";
-          }
-
-          if (cod === '587-32-LE26' || cod.includes('587-32-LE26')) {
-            fechaCierreOficial = item.FechaCierreRecepcionOfertas || fechas.FechaCierreOfertas || "2026-08-31 15:10:00";
-          }
+          // El listado por fecha solo trae FechaCierre en el encabezado; se usa si no hay un campo más específico.
+          fechaCierreOficial = fechaCierreOficial || item.FechaCierre || null;
 
           const isExpired = fechaCierreOficial ? new Date(fechaCierreOficial.replace(' ', 'T')).getTime() < Date.now() : false;
 
@@ -1910,8 +2089,9 @@ app.get("/api/licitaciones/external", async (req, res) => {
 
 // Proxy endpoint for Mercado Público Órdenes de Compra (OC) API with keywords
 app.get("/api/ordenescompra/search", async (req, res) => {
-  const { keyword, code, date, ticket: customTicket } = req.query;
-  const ticket = (customTicket as string) || currentMpTicket;
+  const { keyword, code, date } = req.query;
+  const ticket = getTicketOrFail(res);
+  if (!ticket) return;
 
   try {
     const targetUrl = "https://api.mercadopublico.cl/servicios/v1/publico/ordenesdecompra.json";
@@ -2203,19 +2383,13 @@ app.post("/api/mp/logout", handleLogout);
 
 // Endpoint to trigger Puppeteer automation for Mercado Público / ClaveÚnica authentication & scraping
 app.post("/api/mp/connect", async (req, res) => {
+  if (IS_PRODUCTION && !ENABLE_MP_SCRAPER) {
+    return res.status(403).json({ success: false, error: "La conexión con ClaveÚnica está deshabilitada en este servidor." });
+  }
   const { rut, password, code2FA, twoFactorCode, code } = req.body || {};
-
-  if (rut) process.env.CU_RUT = rut;
-  if (password) process.env.CU_PASSWORD = password;
-
   const finalCode = (code2FA || twoFactorCode || code || "").toString().trim();
 
-  console.log("\n========================================================");
-  console.log(" 🤖 SOLICITUD DE AUTENTICACIÓN MERCADO PÚBLICO / CLAVEÚNICA");
-  if (rut) console.log(` 👤 RUT: ${rut}`);
-  if (finalCode) console.log(` 🔑 Código Authenticator provisto: ${finalCode}`);
-  console.log(" 🌐 Lanzando navegador Puppeteer...");
-  console.log("========================================================\n");
+  console.log("🤖 Solicitud de autenticación Mercado Público / ClaveÚnica recibida.");
 
   try {
     const { runMercadoPublicoAuth } = await import("./scripts/mercadopublico_auth.js");
@@ -2233,6 +2407,9 @@ app.post("/api/mp/connect", async (req, res) => {
 
 // Endpoint to receive and submit the 6-digit 2FA code to active Puppeteer browser session
 app.post("/api/submit-2fa", async (req, res) => {
+  if (IS_PRODUCTION && !ENABLE_MP_SCRAPER) {
+    return res.status(403).json({ success: false, error: "La conexión con ClaveÚnica está deshabilitada en este servidor." });
+  }
   const { sessionId, code } = req.body || {};
 
   if (!code || typeof code !== "string" || code.trim().length === 0) {
@@ -2290,6 +2467,9 @@ async function startServer() {
     app.use(vite.middlewares);
   } else {
     const distPath = path.join(process.cwd(), "dist");
+    if (fs.existsSync(path.join(distPath, "server.cjs"))) {
+      console.warn("⚠️ dist/server.cjs existe y sería público. Vuelve a compilar con npm run build.");
+    }
     app.use(express.static(distPath));
     app.get("*", (_req, res) => {
       res.sendFile(path.join(distPath, "index.html"));

@@ -9,7 +9,8 @@ export const SystemSettingsModal: React.FC<SystemSettingsModalProps> = ({ onClos
   const [keywords, setKeywords] = useState('software, desarrollo, inteligencia artificial, google maps, cloud, bi');
   const [scrapingFrequency, setScrapingFrequency] = useState('30 min');
   const [alertEmail, setAlertEmail] = useState('alertas@empresa.cl');
-  const [ticket, setTicket] = useState('DA0DDB29-A6DB-4B60-A862-AFCAD7FC31F8');
+  const [ticket, setTicket] = useState('');
+  const [ticketMasked, setTicketMasked] = useState('');
 
   const [loading, setLoading] = useState(false);
   const [fetching, setFetching] = useState(true);
@@ -26,7 +27,7 @@ export const SystemSettingsModal: React.FC<SystemSettingsModalProps> = ({ onClos
           if (data.keywords) setKeywords(data.keywords);
           if (data.scrapingFrequency) setScrapingFrequency(data.scrapingFrequency);
           if (data.alertEmail) setAlertEmail(data.alertEmail);
-          if (data.ticket) setTicket(data.ticket);
+          setTicketMasked(data.ticketConfigured ? data.ticket : '');
         }
       } catch (err) {
         console.error('Error cargando configuración:', err);
@@ -51,7 +52,7 @@ export const SystemSettingsModal: React.FC<SystemSettingsModalProps> = ({ onClos
           keywords,
           scrapingFrequency,
           alertEmail,
-          ticket
+          ...(ticket.trim() ? { ticket: ticket.trim() } : {})
         })
       });
 
@@ -179,15 +180,15 @@ export const SystemSettingsModal: React.FC<SystemSettingsModalProps> = ({ onClos
               <div className="relative">
                 <input
                   type="text"
-                  required
+                  autoComplete="off"
                   value={ticket}
                   onChange={(e) => setTicket(e.target.value)}
-                  placeholder="DA0DDB29-A6DB-4B60-A862-AFCAD7FC31F8"
+                  placeholder={ticketMasked ? `Configurado (${ticketMasked}). Deja vacío para no cambiarlo.` : 'No configurado'}
                   className="w-full px-3 py-2.5 text-xs font-mono font-semibold border rounded-xl bg-slate-50 focus:bg-white border-slate-300 focus:border-blue-500 text-slate-900 focus:outline-none focus:ring-1 focus:ring-blue-500 shadow-xs"
                 />
               </div>
               <p className="text-[11px] text-slate-500 mt-1">
-                Ticket de acceso para la API oficial de Mercado Público.
+                Ticket de la API oficial de Mercado Público. El valor permanente se define en el servidor (variable MERCADOPUBLICO_TICKET); lo que ingreses aquí dura hasta el próximo reinicio.
               </p>
             </div>
 

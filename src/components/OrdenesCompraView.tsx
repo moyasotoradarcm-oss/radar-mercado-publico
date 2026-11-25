@@ -1,6 +1,5 @@
 import React, { useState } from 'react';
 import { Search, Calendar, RefreshCw, ExternalLink, BarChart2 } from 'lucide-react';
-import { INITIAL_ORDENES_COMPRA } from '../data/mockData';
 import { parseMercadoPublicoExcel } from '../utils/excelParser';
 import { OrdenCompraItem } from '../types';
 
@@ -21,7 +20,7 @@ export const OrdenesCompraView: React.FC<OrdenesCompraViewProps> = ({
   const [isUploading, setIsUploading] = useState(false);
   const [loadedCount, setLoadedCount] = useState<number | null>(null);
 
-  const safeData = loadedOrdenes || (Array.isArray(ordenesCompra) && ordenesCompra.length > 0 ? ordenesCompra : INITIAL_ORDENES_COMPRA);
+  const safeData = loadedOrdenes || (Array.isArray(ordenesCompra) ? ordenesCompra : []);
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
@@ -37,7 +36,7 @@ export const OrdenesCompraView: React.FC<OrdenesCompraViewProps> = ({
 
       // Acumular con registros existentes y eliminar duplicados por ID (Codigo de OC)
       setLoadedOrdenes((prev) => {
-        const baseList = prev || (Array.isArray(ordenesCompra) && ordenesCompra.length > 0 ? ordenesCompra : INITIAL_ORDENES_COMPRA);
+        const baseList = prev || (Array.isArray(ordenesCompra) ? ordenesCompra : []);
         const combinados = [...baseList, ...nuevosItems];
         const unicos = Array.from(new Map(combinados.map((item) => [item.id, item])).values());
         setLoadedCount(unicos.length);

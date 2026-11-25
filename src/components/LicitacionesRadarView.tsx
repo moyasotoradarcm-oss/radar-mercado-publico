@@ -21,13 +21,19 @@ import {
   AlertCircle,
   FileSpreadsheet
 } from 'lucide-react';
-import { LicitacionItem, TipoProceso, AlertaRule, SET_PALABRAS_CLAVE_MASTER } from '../types';
+import { LicitacionItem, TipoProceso, AlertaRule } from '../types';
 import { openGoogleCalendar } from '../lib/googleCalendar';
 import { formatChileDateTime, calculateChileRemainingTime, getItemOfficialUrl, isItemExpired, cleanOfficialId, extractFechaCierre } from '../lib/dateUtils';
-import { matchesSearchTerm, matchesTipoExact, matchesAllTagsDeep, cleanTextPrefixes } from '../lib/searchUtils';
+import { getFichaUrl } from '../lib/openFicha';
+import { getItemSearchableText, matchKeywords, matchesSearchTerm, matchesTipoExact, matchesAllTagsDeep, cleanTextPrefixes } from '../lib/searchUtils';
 import { CreateAlertModal } from './CreateAlertModal';
+import { OrganismoName } from './OrganismoName';
+import { KeywordClusterFilter } from './KeywordClusterFilter';
+import { ReportExportActions } from './ReportExportActions';
 
 import { fetchLicitacionPorCodigo } from '../services/mercadoPublicoApi';
+import { SET_PALABRAS_CLAVE_MASTER, type KeywordClusterKey } from '../config/keywords';
+import { isCodigoLicitacion } from '../lib/processClassification';
 
 interface LicitacionesRadarViewProps {
   licitaciones: LicitacionItem[];
@@ -43,8 +49,6 @@ interface LicitacionesRadarViewProps {
   initial7DaysFilter?: boolean;
   setActiveTab?: (tab: any) => void;
 }
-
-const PRESET_KEYWORDS = SET_PALABRAS_CLAVE_MASTER;
 
 export const LicitacionesRadarView: React.FC<LicitacionesRadarViewProps> = ({
   licitaciones,
@@ -66,11 +70,7 @@ export const LicitacionesRadarView: React.FC<LicitacionesRadarViewProps> = ({
     const cleanTerm = debouncedSearchTerm.trim();
 
     // Patrón de código de Mercado Público
-    const isCodePattern = /^[0-9a-zA-Z]+-[0-9a-zA-Z]+-[0-9a-zA-Z]+/i.test(cleanTerm) ||
-                          /^(CM|CO|COT)-[0-9a-zA-Z]+/i.test(cleanTerm) ||
-                          /^[0-9]{4,}-[0-9a-zA-Z]+/i.test(cleanTerm);
-
-    if (isCodePattern) {
+    if (isCodigoLicitacion(cleanTerm)) {
       fetchLicitacionPorCodigo(cleanTerm).then((found) => {
         if (found && found.length > 0 && onFastTrackSearchResult) {
           onFastTrackSearchResult(found);
@@ -85,6 +85,7 @@ export const LicitacionesRadarView: React.FC<LicitacionesRadarViewProps> = ({
     initial7DaysFilter ? '7DIAS' : '30DIAS'
   );
   const [selectedTags, setSelectedTags] = useState<string[]>([]);
+  const [selectedKeywordClusters, setSelectedKeywordClusters] = useState<KeywordClusterKey[]>([]);
   const [viewMode, setViewMode] = useState<'grid' | 'table'>('grid');
   const [alertModalItem, setAlertModalItem] = useState<LicitacionItem | null>(null);
 
@@ -92,6 +93,12 @@ export const LicitacionesRadarView: React.FC<LicitacionesRadarViewProps> = ({
     setSelectedTags((prev) =>
       prev.includes(tag) ? prev.filter((t) => t !== tag) : [...prev, tag]
     );
+  };
+
+  const toggleKeywordCluster = (cluster: KeywordClusterKey) => {
+    setSelectedKeywordClusters((current) => current.includes(cluster)
+      ? current.filter((selected) => selected !== cluster)
+      : [...current, cluster]);
   };
 
   const safeLicitaciones = useMemo(() => licitaciones || [], [licitaciones]);
@@ -139,10 +146,24 @@ export const LicitacionesRadarView: React.FC<LicitacionesRadarViewProps> = ({
       if ((selectedTags || []).length > 0 && !matchesAllTagsDeep(item, selectedTags)) {
         return false;
       }
+      if (selectedKeywordClusters.length && !matchKeywords(getItemSearchableText(item), selectedKeywordClusters).matches.length) {
+        return false;
+      }
 
       return true;
     });
-  }, [safeLicitaciones, selectedStatus, debouncedSearchTerm, selectedTipo, selectedRange, selectedTags]);
+  }, [safeLicitaciones, selectedStatus, debouncedSearchTerm, selectedTipo, selectedRange, selectedTags, selectedKeywordClusters]);
+
+  const handleOpenFicha = (e: React.MouseEvent<HTMLButtonElement>, item: LicitacionItem) => {
+    e.stopPropagation();
+    e.preventDefault();
+    const fichaUrl = getFichaUrl(item);
+    if (!fichaUrl) {
+      console.error('No se encontró el código de la licitación', item);
+      return;
+    }
+    window.open(fichaUrl, '_blank', 'noopener,noreferrer');
+  };
 
   return (
     <div className="space-y-6 pb-12">
@@ -369,10 +390,16 @@ export const LicitacionesRadarView: React.FC<LicitacionesRadarViewProps> = ({
           </div>
         </div>
 
+        <KeywordClusterFilter
+          selectedClusters={selectedKeywordClusters}
+          onToggle={toggleKeywordCluster}
+          className="pt-1"
+        />
+
         {/* Preset Keywords */}
         <div className="flex items-center space-x-2 pt-1 overflow-x-auto text-xs scrollbar-none">
           <span className="text-slate-400 font-medium whitespace-nowrap">Keywords rápidas:</span>
-          {PRESET_KEYWORDS.map((kw) => {
+          {SET_PALABRAS_CLAVE_MASTER.map((kw) => {
             const active = selectedTags.includes(kw);
             return (
               <button
@@ -397,20 +424,24 @@ export const LicitacionesRadarView: React.FC<LicitacionesRadarViewProps> = ({
           Mostrando <strong className="text-blue-600">{filteredLicitaciones.length}</strong> oportunidades ({selectedStatus.toLowerCase()})
         </p>
 
-        {(selectedTipo !== 'TODOS' || selectedStatus !== 'ACTIVAS' || selectedTags.length > 0 || searchTerm) && (
-          <button
-            onClick={() => {
-              setSearchTerm('');
-              setSelectedTipo('TODOS');
-              setSelectedStatus('ACTIVAS');
-              setSelectedRange('30DIAS');
-              setSelectedTags([]);
-            }}
-            className="text-xs text-blue-600 hover:underline font-medium"
-          >
-            Restablecer Filtros
-          </button>
-        )}
+        <div className="flex flex-wrap items-center justify-end gap-3">
+          <ReportExportActions items={filteredLicitaciones} />
+          {(selectedTipo !== 'TODOS' || selectedStatus !== 'ACTIVAS' || selectedTags.length > 0 || selectedKeywordClusters.length > 0 || searchTerm) && (
+            <button
+              onClick={() => {
+                setSearchTerm('');
+                setSelectedTipo('TODOS');
+                setSelectedStatus('ACTIVAS');
+                setSelectedRange('30DIAS');
+                setSelectedTags([]);
+                setSelectedKeywordClusters([]);
+              }}
+              className="text-xs text-blue-600 hover:underline font-medium"
+            >
+              Restablecer Filtros
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Grid or Table View */}
@@ -472,14 +503,14 @@ export const LicitacionesRadarView: React.FC<LicitacionesRadarViewProps> = ({
                   </h3>
 
                   <p className="text-xs text-slate-500 line-clamp-2">
-                    {cleanTextPrefixes(item.descripcion)}
+                    {cleanTextPrefixes(item.descripcion ?? '')}
                   </p>
 
                   <div className="pt-2 border-t border-slate-100 text-xs text-slate-600 space-y-1">
                     <div className="flex items-center justify-between">
                       <span className="font-medium">Organismo:</span>
-                      <span className="font-semibold text-slate-800 truncate max-w-[180px]" title={item.organismo || item.organismo_limpio || item.cliente}>
-                        {item.organismo || item.organismo_limpio || item.cliente}
+                      <span className="font-semibold text-slate-800 truncate max-w-[180px]">
+                        <OrganismoName item={item} />
                       </span>
                     </div>
                     <div className="flex items-center justify-between">
@@ -501,28 +532,31 @@ export const LicitacionesRadarView: React.FC<LicitacionesRadarViewProps> = ({
                       <Bell className="w-3.5 h-3.5 text-amber-600" />
                     </button>
 
-                    <a
-                      href={getItemOfficialUrl(item)}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="p-1.5 text-slate-600 hover:text-blue-700 hover:bg-blue-50 rounded-lg border border-slate-200 transition text-xs font-bold flex items-center space-x-1"
+                    <button
+                      type="button"
+                      onClick={(e) => handleOpenFicha(e, item)}
+                      className="bg-orange-600 hover:bg-orange-500 text-white font-medium px-3 py-1.5 rounded-lg text-xs shadow-sm transition-colors flex items-center space-x-1"
                       title="Ver Ficha Oficial"
                     >
                       <ExternalLink className="w-3.5 h-3.5" />
                       <span>Ficha</span>
-                    </a>
+                    </button>
                   </div>
 
                   <div className="flex items-center space-x-1.5">
                     <button
-                      onClick={() => onSelectLicitacionAI(item)}
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onSelectLicitacionAI?.(item);
+                      }}
                       className="bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs px-2.5 py-1.5 rounded-lg shadow-xs transition"
                     >
                       Evaluar IA
                     </button>
                     {!expired && (
                       <button
-                        onClick={() => onAddPostulacion(item)}
+                        onClick={() => onAddPostulacion?.(item)}
                         className="bg-slate-900 hover:bg-slate-800 text-white font-bold text-xs px-2.5 py-1.5 rounded-lg transition"
                       >
                         + Postular
@@ -566,8 +600,8 @@ export const LicitacionesRadarView: React.FC<LicitacionesRadarViewProps> = ({
                       <td className="py-3 px-4 font-semibold text-slate-800 max-w-xs sm:max-w-md">
                         <p className="line-clamp-2">{cleanTextPrefixes(item.nombre)}</p>
                       </td>
-                      <td className="max-w-[220px] truncate pr-4 text-slate-700 font-medium" title={item.organismo || item.organismo_limpio || item.cliente}>
-                        {item.organismo || item.organismo_limpio || item.cliente}
+                      <td className="max-w-[220px] truncate pr-4 text-slate-700 font-medium">
+                        <OrganismoName item={item} />
                       </td>
                       <td className="w-[120px] text-left whitespace-nowrap">
                         <span className="inline-block px-2.5 py-1 text-xs font-semibold rounded-md bg-emerald-100 text-emerald-700">
@@ -590,16 +624,17 @@ export const LicitacionesRadarView: React.FC<LicitacionesRadarViewProps> = ({
                       </td>
                       <td className="py-3 px-4 text-right whitespace-nowrap">
                         <div className="flex items-center justify-end space-x-1.5">
-                          <a
-                            href={getItemOfficialUrl(item)}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold px-2 py-1 rounded-lg border border-slate-200 transition text-[11px]"
+                          <button
+                            type="button"
+                            onClick={(e) => handleOpenFicha(e, item)}
+                            className="bg-orange-600 hover:bg-orange-500 text-white font-medium px-3 py-1.5 rounded-lg text-xs shadow-sm transition-colors"
                           >
                             Ficha
-                          </a>
+                          </button>
                           <button
-                            onClick={() => {
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
                               if (onSelectLicitacionAI) {
                                 onSelectLicitacionAI(item);
                               } else if (openAiEvaluator) {

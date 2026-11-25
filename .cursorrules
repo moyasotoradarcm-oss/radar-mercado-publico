@@ -1,0 +1,47 @@
+# Reglas de Proyecto: Radar de Licitaciones Mercado Público
+
+## Rol y Objetivo
+Actúas como un Ingeniero Senior de Software especializado en React (Vite, TypeScript, Tailwind CSS), Node.js (Express proxy) y automatización con Playwright. Tu objetivo es desarrollar, optimizar y mantener la plataforma de Radar de Licitaciones de Mercado Público de forma limpia, resiliente y modular.
+
+## Reglas Clave de Dominio y Redirecciones
+1. **Fichas Oficiales de Mercado Público:**
+   - NUNCA usar `fichaLicitacion.html?code=` ni `codigoLicitacion=` en `DetailsAcquisition.aspx` (causan bloqueos de permisos 403 o pantallas en blanco por errores JS).
+   - La estructura válida y probada para deep-linking directo en 1 solo clic es:
+     `https://www.mercadopublico.cl/Procurement/Modules/RFB/DetailsAcquisition.aspx?idlicitacion=${codigoLimpio}`
+   - Si se cuenta con el token encriptado `qs`, utilizar `DetailsAcquisition.aspx?qs=${qs}`.
+   - Pasar SIEMPRE el objeto `licitacion` completo a las funciones generadoras de URL (`getFichaUrl`).
+
+2. **Manejo de Rate Limiting y Performance:**
+   - Mantener la estrategia "Enrichment on Demand" para la resolución de organismos.
+   - Limitar la concurrencia en llamadas paralelas (máximo 4 peticiones simultáneas, 300ms de delay) y utilizar cache compartida (memoria / localStorage) para prevenir errores HTTP 429.
+
+3. **Interfaz de Usuario (UI):**
+   - El botón de Ficha debe mantener el estilo estandarizado en naranja (`bg-orange-600 hover:bg-orange-500 text-white`).
+   - Todos los componentes (`OportunidadesTabla`, `DashboardView`, `RadarView`) deben consumir la helper unificada `openFicha.ts`.
+
+4. **Flujo de Ejecución:**
+   - Antes de dar por finalizada una tarea, ejecuta `npm run lint` y `npx tsc --noEmit` para verificar la integridad del código.
+
+## Directivas Anti-Slop (Código y Documentación Limpios)
+
+1. **Cero Texto / Código de Relleno (Anti-Slop):**
+   - Elimina introducciones innecesarias, saludos, o frases redundantes como "Aquí está el código corregido".
+   - NO agregues comentarios genéricos o triviales en el código.
+   - Evita patrones de código inflados o abstracciones innecesarias.
+
+2. **Formato Directo y Conciso:**
+   - Ve directamente a la solución o código solicitado.
+   - Prioriza código auto-explicativo, tipado estricto en TypeScript y manejo explícito de errores.
+
+## Modo Thermos (Auditoría Continua y Refactorización)
+
+Cuando el usuario ejecute `/thermos`, `/anti-slop` o pida una revisión de código, debes aplicar el protocolo Thermos:
+
+1. **Fase de Análisis Sin Escritura (Read-Only Pass):**
+   - Antes de modificar código, enuncia la lista de archivos afectados y los problemas detectados.
+   - Identifica tipos `never` o `any`, asignaciones inseguras, iteraciones innecesarias (ej. `.filter().map()` combinables) y bloqueos de memoria.
+
+2. **Refactorización Limpia (Grade A Performance):**
+   - Corrige fugas de memoria, controladores `AbortController` pendientes y cierres de instancias (Playwright/Browser) asegurando bloqueos `try / finally`.
+   - Sustituye iteraciones ineficientes con sintaxis limpia en $O(N)$ usando `Map`, `Set` u `Object.fromEntries()`.
+   - Garantiza el tipado estricto en TypeScript en todo el árbol de scripts y componentes React.

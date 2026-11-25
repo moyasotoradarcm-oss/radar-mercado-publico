@@ -13,9 +13,13 @@ import {
 } from 'lucide-react';
 import { LicitacionItem, GeminiAnalysisResult } from '../types';
 import { generateAIEvaluationPDF } from '../lib/aiEvaluationPdf';
+import { resolveOrganismo } from '../lib/organismosCache';
+import { cacheAiEvaluation, getCachedAiEvaluation } from '../lib/aiEvaluationCache';
+
+const AI_EVALUATION_PROFILE = 'Empresa Chilena de Software, Consultoría TI, Inteligencia Artificial, Servicios Nube (GCP/AWS/Azure), Geolocalización (Maps/GIS) y Ciberseguridad.';
 
 interface AIEvaluatorModalProps {
-  item: LicitacionItem;
+  item?: LicitacionItem | null;
   onClose: () => void;
   onAddPostulacion?: (item: LicitacionItem) => void;
   preloadedAnalysis?: GeminiAnalysisResult;
@@ -27,30 +31,89 @@ export const AIEvaluatorModal: React.FC<AIEvaluatorModalProps> = ({
   onAddPostulacion,
   preloadedAnalysis
 }) => {
-  const [loading, setLoading] = useState(!preloadedAnalysis);
+  const safeItem = item ?? null;
+  const codigoConsulta = String(safeItem?.CodigoExterno || safeItem?.codigo || safeItem?.id || '').trim();
+  const codigoDisplay = safeItem?.codigo || safeItem?.id || 'Sin código';
+  const nombreDisplay = safeItem?.nombre || safeItem?.licitacionNombre || 'Sin título de licitación';
+  const cachedAnalysis = safeItem ? getCachedAiEvaluation(safeItem, AI_EVALUATION_PROFILE) : null;
+
+  const [loading, setLoading] = useState(!preloadedAnalysis && !cachedAnalysis && !!safeItem);
   const [submitting, setSubmitting] = useState(false);
   const [toastSuccess, setToastSuccess] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [analysis, setAnalysis] = useState<GeminiAnalysisResult | null>(preloadedAnalysis || null);
+  const [analysis, setAnalysis] = useState<GeminiAnalysisResult | null>(preloadedAnalysis || cachedAnalysis || null);
+  const [organismoDetalle, setOrganismoDetalle] = useState<{ codigo: string; nombre: string } | null>(null);
 
   useEffect(() => {
     let isMounted = true;
+    if (!codigoConsulta) return () => { isMounted = false; };
+
+    void resolveOrganismo(codigoConsulta, nombreDisplay).then((nombre) => {
+      if (isMounted && nombre) setOrganismoDetalle({ codigo: codigoConsulta, nombre });
+    });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [codigoConsulta, nombreDisplay]);
+
+  const itemOrganismo = [
+    safeItem?.Comprador?.NombreOrganismo,
+    safeItem?.NombreOrganismo,
+    safeItem?.organismoNombre,
+    safeItem?.organismo,
+    safeItem?.nombreOrganismo
+  ].find((value) =>
+    typeof value === 'string' &&
+    value.trim() &&
+    value.trim() !== String(safeItem?.Nombre || safeItem?.nombre || '').trim() &&
+    !['sin organismo', 'organismo no especificado', 'organismo mercado público', 'mercado público (ver ficha)'].includes(value.trim().toLowerCase())
+  );
+  const organismoDisplay = (organismoDetalle?.codigo === codigoConsulta ? organismoDetalle.nombre : null)
+    || itemOrganismo
+    || 'Consultar en Ficha';
+
+  useEffect(() => {
+    let isMounted = true;
+    let requestController: AbortController | null = null;
+
+    if (!safeItem) {
+      setLoading(false);
+      setError(null);
+      setAnalysis(null);
+      return;
+    }
 
     if (preloadedAnalysis) {
-      return; // Skip fetching if we already have the analysis
+      setAnalysis(preloadedAnalysis);
+      setLoading(false);
+      return;
+    }
+
+    const cached = getCachedAiEvaluation(safeItem, AI_EVALUATION_PROFILE);
+    if (cached) {
+      setAnalysis(cached);
+      setError(null);
+      setLoading(false);
+      return;
     }
 
     async function runAI() {
+      const controller = new AbortController();
+      requestController = controller;
+      const timeoutId = window.setTimeout(() => controller.abort(), 5000);
       setLoading(true);
       setError(null);
+      setAnalysis(null);
 
       try {
         const response = await fetch('/api/ai/analyze', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
+          signal: controller.signal,
           body: JSON.stringify({
-            licitacion: item,
-            perfilEmpresa: "Empresa Chilena de Software, Consultoría TI, Inteligencia Artificial, Servicios Nube (GCP/AWS/Azure), Geolocalización (Maps/GIS) y Ciberseguridad."
+            licitacion: safeItem,
+            perfilEmpresa: AI_EVALUATION_PROFILE
           })
         });
 
@@ -62,22 +125,30 @@ export const AIEvaluatorModal: React.FC<AIEvaluatorModalProps> = ({
         const data = await response.json();
         if (isMounted) {
           setAnalysis(data);
+          cacheAiEvaluation(safeItem, AI_EVALUATION_PROFILE, data);
         }
       } catch (err: any) {
         if (isMounted) {
           console.error("Error AI Analzye:", err);
-          setError('Aviso: Error de conexión detectado. Cargando evaluación de respaldo.');
-          setAnalysis({
-            matchScore: 50,
+          setError(controller.signal.aborted
+            ? 'La consulta superó 5 segundos; mostramos una evaluación de respaldo.'
+            : 'Aviso: Error de conexión detectado. Cargando evaluación de respaldo.');
+          const fallbackAnalysis = {
+            matchScore: 0,
             resumenEjecutivo: "Análisis de Inteligencia Artificial no disponible temporalmente por interrupción de conexión o servicio. Recomendamos revisar las bases directamente.",
             requisitosClave: ["Revisar las bases administrativas y técnicas adjuntas en la plataforma Mercado Público."],
             riesgosDetectados: ["Análisis de riesgo no disponible por desconexión temporal."],
             recomendacionesEstrategicas: ["Reintente la evaluación más tarde cuando la conexión se estabilice."],
             perfilesRequeridos: ["Sin información (Error de red)"],
-            cartaGantt: "No disponible."
-          } as any);
+            cartaGantt: "No disponible.",
+            cacheable: true,
+            fallback: true
+          } as any;
+          setAnalysis(fallbackAnalysis);
+          cacheAiEvaluation(safeItem, AI_EVALUATION_PROFILE, fallbackAnalysis);
         }
       } finally {
+        window.clearTimeout(timeoutId);
         if (isMounted) setLoading(false);
       }
     }
@@ -86,17 +157,22 @@ export const AIEvaluatorModal: React.FC<AIEvaluatorModalProps> = ({
 
     return () => {
       isMounted = false;
+      requestController?.abort();
     };
-  }, [item]);
+  }, [safeItem, preloadedAnalysis]);
 
   const handleAddPostulacion = async () => {
+    if (!safeItem) {
+      setError('No hay información disponible para registrar la postulación.');
+      return;
+    }
     setSubmitting(true);
     setError(null);
     try {
       const payload = {
-        id: item.codigo || (item as any).id,
-        codigo: item.codigo,
-        licitacion: item,
+        id: safeItem.codigo || (safeItem as any).id,
+        codigo: safeItem.codigo,
+        licitacion: safeItem,
         aiAnalysis: {
           requisitos: analysis?.requisitosClave || (analysis as any)?.requisitos || [],
           riesgos: analysis?.riesgosDetectados || (analysis as any)?.riesgos || [],
@@ -122,7 +198,7 @@ export const AIEvaluatorModal: React.FC<AIEvaluatorModalProps> = ({
       setToastSuccess('Añadido a Mis Postulaciones correctamente');
 
       if (onAddPostulacion) {
-        onAddPostulacion(item);
+        onAddPostulacion(safeItem);
       }
 
       setTimeout(() => {
@@ -135,6 +211,17 @@ export const AIEvaluatorModal: React.FC<AIEvaluatorModalProps> = ({
       setSubmitting(false);
     }
   };
+
+  if (!safeItem) {
+    return (
+      <div className="fixed inset-0 z-50 bg-slate-950/75 backdrop-blur-xs flex items-center justify-center p-4">
+        <div className="bg-white rounded-2xl max-w-md w-full p-6 text-center shadow-2xl border border-slate-200">
+          <p className="text-base font-bold text-slate-900 mb-2">No hay información disponible</p>
+          <p className="text-sm text-slate-600">No hay datos para mostrar de esta licitación.</p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="fixed inset-0 z-50 bg-slate-950/75 backdrop-blur-xs flex items-center justify-center p-4 overflow-y-auto">
@@ -152,7 +239,7 @@ export const AIEvaluatorModal: React.FC<AIEvaluatorModalProps> = ({
           <div className="space-y-1">
             <div className="flex items-center space-x-2">
               <span className="font-mono text-xs font-bold bg-slate-900 text-white px-2.5 py-1 rounded">
-                {item.codigo}
+                {codigoDisplay}
               </span>
               <span className="bg-indigo-100 text-indigo-800 text-xs font-bold px-2.5 py-0.5 rounded-full flex items-center space-x-1">
                 <Sparkles className="w-3.5 h-3.5 text-indigo-600" />
@@ -160,9 +247,9 @@ export const AIEvaluatorModal: React.FC<AIEvaluatorModalProps> = ({
               </span>
             </div>
             <h3 className="text-base font-bold text-slate-900 leading-snug">
-              {item.nombre}
+              {nombreDisplay}
             </h3>
-            <p className="text-xs font-semibold text-slate-500">{item.cliente}</p>
+            <p className="text-xs font-semibold text-slate-500">Organismo: {organismoDisplay}</p>
           </div>
 
           <button onClick={onClose} disabled={submitting} className="text-slate-400 hover:text-slate-600 p-1">
@@ -177,7 +264,7 @@ export const AIEvaluatorModal: React.FC<AIEvaluatorModalProps> = ({
             <p className="text-sm font-bold text-slate-800">
               Evaluando requerimientos técnicos e idoneidad con Gemini AI...
             </p>
-            <p className="text-xs text-slate-400">Analizando perfil, garantías y competitividad de la propuesta.</p>
+            <p className="text-xs text-slate-400">Resumen estimado en ~3 segundos. Analizando perfil, garantías y competitividad.</p>
           </div>
         ) : error ? (
           <div className="p-4 bg-rose-50 border border-rose-200 rounded-xl text-xs text-rose-800 space-y-2">
@@ -188,6 +275,14 @@ export const AIEvaluatorModal: React.FC<AIEvaluatorModalProps> = ({
           </div>
         ) : analysis ? (
           <div className="space-y-6">
+            {analysis?.fallback && (
+              <div role="alert" className="p-3 bg-amber-50 border border-amber-300 rounded-xl text-xs text-amber-900 flex items-start">
+                <AlertTriangle className="w-4 h-4 mr-2 mt-0.5 shrink-0 text-amber-600" />
+                <span>
+                  Esta evaluación <strong>no fue generada por IA</strong>: Gemini no estuvo disponible. El puntaje se estimó solo por palabras clave y no considera las bases de la licitación.
+                </span>
+              </div>
+            )}
             {/* Match score card */}
             <div className="flex items-center justify-between bg-gradient-to-r from-indigo-900 to-slate-900 text-white p-5 rounded-2xl shadow-md">
               <div>
@@ -198,7 +293,9 @@ export const AIEvaluatorModal: React.FC<AIEvaluatorModalProps> = ({
                   {analysis?.matchScore || 0}%
                 </p>
                 <p className="text-xs text-slate-300 mt-0.5">
-                  Basado en capacidades técnicas, stack tecnológico y experiencia del equipo.
+                  {analysis?.fallback
+                    ? 'Estimación por palabras clave (sin IA).'
+                    : 'Estimado por IA según el perfil de la empresa. Verifique las bases antes de postular.'}
                 </p>
               </div>
 

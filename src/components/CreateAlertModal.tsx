@@ -19,12 +19,12 @@ export const CreateAlertModal: React.FC<CreateAlertModalProps> = ({
 }) => {
   const rawObj = licitacion || item || {};
   const targetItem = {
-    codigo: (rawObj as any).codigo || (rawObj as any).id || 'S/I',
-    cliente: (rawObj as any).cliente || (rawObj as any).organismo || 'General',
-    nombre: (rawObj as any).nombre || (rawObj as any).licitacionNombre || 'Alerta Personalizada',
-    montoEstimadoClp: (rawObj as any).montoEstimadoClp || (rawObj as any).monto || 0,
-    tipo: ((rawObj as any).tipo || 'Licitacion') as TipoProceso,
-    tags: (rawObj as any).tags || []
+    codigo: (rawObj as any)?.codigo || (rawObj as any)?.id || 'S/I',
+    cliente: (rawObj as any)?.organismo || (rawObj as any)?.Comprador?.NombreOrganismo || (rawObj as any)?.nombreOrganismo || (rawObj as any)?.cliente || 'Sin información',
+    nombre: (rawObj as any)?.nombre || (rawObj as any)?.licitacionNombre || 'Alerta Personalizada',
+    montoEstimadoClp: (rawObj as any)?.montoEstimadoClp || (rawObj as any)?.monto || 0,
+    tipo: ((rawObj as any)?.tipo || 'Licitacion') as TipoProceso,
+    tags: (rawObj as any)?.tags || []
   };
 
   const saveFn = onAddAlerta || onSave || (() => {});

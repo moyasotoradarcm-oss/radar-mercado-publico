@@ -1,52 +1,107 @@
 import { LicitacionItem, OrdenCompraItem, Oportunidad } from '../types';
 import { cleanOfficialId } from '../lib/dateUtils';
 import { cleanTextPrefixes } from '../lib/searchUtils';
+import { classifyMercadoPublicoProcess } from '../lib/processClassification';
+
+const MP_CACHE_PREFIX = 'mercado-publico-api:';
+const MP_CACHE_TTL_MS = 10 * 60 * 1000;
+const inFlightApiRequests = new Map<string, Promise<any | null>>();
+let lastApiWarning: string | null = null;
+
+export const getLastApiWarning = (): string | null => lastApiWarning;
+export const resetApiWarning = (): void => { lastApiWarning = null; };
+
+function readCachedApiResponse(url: string): { timestamp: number; data: any } | null {
+  try {
+    const cached = sessionStorage.getItem(`${MP_CACHE_PREFIX}${url}`);
+    return cached ? JSON.parse(cached) : null;
+  } catch {
+    return null;
+  }
+}
+
+function isCacheableApiResponse(data: any): boolean {
+  return Array.isArray(data)
+    || Array.isArray(data?.Listado)
+    || Array.isArray(data?.data)
+    || Array.isArray(data?.opportunities);
+}
+
+async function fetchMercadoPublicoJson(url: string): Promise<any | null> {
+  const cached = readCachedApiResponse(url);
+  if (cached && Date.now() - cached.timestamp < MP_CACHE_TTL_MS) return cached.data;
+
+  const pendingRequest = inFlightApiRequests.get(url);
+  if (pendingRequest) return pendingRequest;
+
+  const request = (async () => {
+    try {
+      const response = await fetch(url);
+      if (response.status === 429) {
+        lastApiWarning = 'Mercado Público limitó las solicitudes (HTTP 429). Intente en unos minutos.';
+        return cached?.data ?? null;
+      }
+      if (!response.ok) {
+        const body = await response.json().catch(() => null);
+        lastApiWarning = body?.warning || body?.error || `El servidor respondió con error HTTP ${response.status}.`;
+        return cached?.data ?? null;
+      }
+
+      const data = await response.json();
+      if (data?.warning) {
+        lastApiWarning = data.warning;
+        return cached?.data ?? data;
+      }
+      if (!isCacheableApiResponse(data)) return cached?.data ?? null;
+
+      try {
+        sessionStorage.setItem(`${MP_CACHE_PREFIX}${url}`, JSON.stringify({ timestamp: Date.now(), data }));
+      } catch {
+        // La respuesta sigue siendo utilizable aunque el almacenamiento del navegador esté lleno o bloqueado.
+      }
+      return data;
+    } catch (error) {
+      lastApiWarning = 'No fue posible conectar con el servidor.';
+      console.warn('No fue posible consultar Mercado Público; se usará la última respuesta disponible.', error);
+      return cached?.data ?? null;
+    }
+  })();
+
+  inFlightApiRequests.set(url, request);
+  try {
+    return await request;
+  } finally {
+    inFlightApiRequests.delete(url);
+  }
+}
 
 export const normalizeApiResponse = (rawData: any[]): Oportunidad[] => {
   if (!Array.isArray(rawData)) return [];
 
   return rawData.map((item) => {
     // Extraer ID soportando Licitaciones Tradicionales (CodigoExterno) y Convenio Marco (IdCotizacion/Codigo)
-    const rawId = item.CodigoExterno || item.IdCotizacion || item.Codigo || item.id || item.codigo || '';
-    const idUpper = String(rawId).toUpperCase();
-    
-    // Identificar Tipo: Si contiene sufijos de licitaciones tradicionales (-LP, -LE, -L1, etc.), es Licitación
-    let tipo: 'Licitación' | 'Convenio Marco' | 'Compra Ágil' = 'Licitación';
-    if (
-      idUpper.includes('-LP') ||
-      idUpper.includes('-LE') ||
-      idUpper.includes('-L1') ||
-      idUpper.includes('-LQ') ||
-      idUpper.includes('-LR') ||
-      idUpper.includes('-LS') ||
-      idUpper.includes('-E2') ||
-      idUpper.includes('-L2')
-    ) {
-      tipo = 'Licitación';
-    } else if (rawId.startsWith('CM-') || (item.IdCotizacion && !item.CodigoExterno)) {
-      tipo = 'Convenio Marco';
-    } else if (rawId.startsWith('CO-') || item.EsCompraAgil) {
-      tipo = 'Compra Ágil';
-    }
+    const rawId = item.CodigoExterno || item.IdCotizacion || item.CodigoLicitacion || item.Codigo || item.id || item.codigo || '';
+    const classification = classifyMercadoPublicoProcess(item, rawId);
 
-    // Extraer Organismo (manejando objetos anidados Comprador)
-    const organismo = 
-      item.Comprador?.NombreOrganismo || 
-      item.NombreOrganismo || 
-      item.Organismo || 
-      item.organismo ||
-      'Sin Organismo';
-
-    // Extraer Nombre
-    const nombre = item.Nombre || item.NombreCotizacion || item.nombre || 'Sin Nombre';
+    // Extraer Nombre y organismo por separado.
+    const nombre = item.Nombre || item.nombre || 'Sin título';
+    const organismoRaw = item?.Comprador?.NombreOrganismo ||
+      item?.organismoNombre ||
+      item?.organismo?.nombre ||
+      item?.NombreOrganismo ||
+      (typeof item?.organismo === 'string' ? item.organismo : null);
+    const organismo = typeof organismoRaw === 'string' && organismoRaw.trim() !== String(nombre).trim()
+      ? organismoRaw.trim()
+      : 'Organismo no especificado';
 
     return {
       id: rawId,
       nombre: nombre,
       organismo: organismo,
       comprador: item.Comprador?.NombreUsuario || item.NombreComprador || 'N/A',
-      tipo: tipo,
-      fecha_cierre: item.FechaCierre || item.FechaFinPublicacion || 'N/A',
+      tipo: classification.tipo,
+      tipo_compra: classification.tipo_compra,
+      fecha_cierre: item.FechaCierreOficial || item.FechaCierre || item.FechaFinPublicacion || '',
       monto: item.MontoTotal || item.PresupuestoMaximo || 0,
     };
   }).filter((item) => item.id !== ''); // Filtra registros sin ID
@@ -58,7 +113,7 @@ export const normalizeApiResponse = (rawData: any[]): Oportunidad[] => {
  * Mapeo estricto de campos:
  * - id: item.CodigoExterno || item.Codigo || item.CodigoLicitacion || item.IdCotizacion || item.id || item.codigo
  * - nombre: item.Nombre || item.NombreCotizacion || item.nombre || item.title
- * - organismo: item.Comprador?.NombreOrganismo || item.NombreOrganismo || item.organismo || item.buyer || item.cliente
+ * - organismo: item.Comprador?.NombreOrganismo || item.NombreOrganismo || item.organismoNombre || item.organismo.nombre || item.organismo
  * - tipo: "Licitación", "Convenio Marco" o "Compra Ágil"
  */
 export function normalizeApiOpportunity(item: any): LicitacionItem | null {
@@ -82,31 +137,16 @@ export function normalizeApiOpportunity(item: any): LicitacionItem | null {
   const idStr = cleanOfficialId(cleanStr(rawId));
 
   // 2. Mapeo estricto de Nombre / Título
-  const rawNombre = item.Nombre ||
-    item.NombreCotizacion ||
-    item.nombre ||
-    item.title ||
-    item.name ||
-    item['NOMBRE DE COTIZACIÓN'] ||
-    item['NOMBRE DE COTIZACION'] ||
-    item.nombre_de_cotizacion ||
-    item['Nombre del Requerimiento'];
+  const rawNombre = item.Nombre || item.nombre || 'Sin título';
 
   const nombreStr = cleanTextPrefixes(cleanStr(rawNombre));
 
   // 3. Mapeo estricto de Organismo Comprador
-  const rawOrganismo = item.Comprador?.NombreOrganismo ||
-    item.NombreOrganismo ||
-    item.Organismo ||
-    item.organismo ||
-    item.buyer ||
-    item.cliente ||
-    item.institution ||
-    item.organism ||
-    item['ORGANIZACIÓN'] ||
-    item['ORGANIZACION'] ||
-    item.organizacion ||
-    item.razon_social;
+  const rawOrganismo = item?.Comprador?.NombreOrganismo ||
+    item?.organismoNombre ||
+    item?.organismo?.nombre ||
+    item?.NombreOrganismo ||
+    (typeof item?.organismo === 'string' ? item.organismo : null);
 
   const organismoStr = cleanStr(rawOrganismo);
 
@@ -115,45 +155,16 @@ export function normalizeApiOpportunity(item: any): LicitacionItem | null {
     return null;
   }
 
-  const finalId = idStr || '425-37-LP26';
+  if (!idStr) return null;
+  const finalId = idStr;
   const finalNombre = nombreStr || 'Requerimiento Mercado Público';
-  const finalOrganismo = organismoStr || 'Organismo Público';
+  const finalOrganismo = organismoStr && organismoStr !== cleanStr(rawNombre)
+    ? organismoStr
+    : 'Organismo no especificado';
 
   // 4. Mapeo estricto de Tipo / Modalidad ("Licitación", "Convenio Marco", "Compra Ágil")
   const rawTipo = cleanStr(item.tipo || item.type || item.Tipo || item['Tipo de Proceso']).toLowerCase();
-  const idUpper = finalId.toUpperCase();
-  const nombreUpper = finalNombre.toUpperCase();
-
-  let tipo: 'Licitación' | 'Convenio Marco' | 'Compra Ágil' = 'Licitación';
-  if (
-    idUpper.includes('-LP') ||
-    idUpper.includes('-LE') ||
-    idUpper.includes('-L1') ||
-    idUpper.includes('-LQ') ||
-    idUpper.includes('-LR') ||
-    idUpper.includes('-LS') ||
-    idUpper.includes('-E2') ||
-    idUpper.includes('-L2') ||
-    rawTipo.includes('licitacion') ||
-    rawTipo.includes('licitación')
-  ) {
-    tipo = 'Licitación';
-  } else if (
-    idUpper.startsWith('CM-') ||
-    rawTipo.includes('convenio') || rawTipo.includes('marco') || rawTipo === 'cm' ||
-    idUpper.includes('AISP') ||
-    nombreUpper.includes('CONVENIO MARCO')
-  ) {
-    tipo = 'Convenio Marco';
-  } else if (
-    idUpper.startsWith('CO-') ||
-    rawTipo.includes('agil') || rawTipo.includes('ágil') || rawTipo.includes('cot') ||
-    idUpper.includes('COT') || nombreUpper.includes('COMPRA AGIL') || nombreUpper.includes('COMPRA ÁGIL') || item.EsCompraAgil
-  ) {
-    tipo = 'Compra Ágil';
-  } else {
-    tipo = 'Licitación';
-  }
+  const classification = classifyMercadoPublicoProcess({ ...item, tipo: rawTipo }, finalId);
 
   // Comprador / Contacto
   const comprador = cleanStr(
@@ -163,11 +174,12 @@ export function normalizeApiOpportunity(item: any): LicitacionItem | null {
     item.contactName ||
     item['NOMBRE DEL COMPRADOR'] ||
     item.nombre_completo ||
-    'Jefe de Adquisiciones'
-  ) || 'Jefe de Adquisiciones';
+    'No informado'
+  ) || 'No informado';
 
   // Fecha de Cierre
   const rawClosure = cleanStr(
+    item.FechaCierreOficial ||
     item.Fechas?.FechaCierre ||
     item.Fechas?.FechaCierreOfertas ||
     item.FechaCierre ||
@@ -178,10 +190,9 @@ export function normalizeApiOpportunity(item: any): LicitacionItem | null {
     item.closingDate
   );
 
-  const isValidDate = rawClosure && !isNaN(new Date(rawClosure).getTime());
-  const fecha_cierre = isValidDate
-    ? new Date(rawClosure).toISOString()
-    : new Date(Date.now() + 15 * 24 * 60 * 60 * 1000).toISOString();
+  const isValidDate = Boolean(rawClosure) && !isNaN(new Date(rawClosure.replace(' ', 'T')).getTime());
+  // Sin fecha oficial no se inventa una: el filtro de vigencia descarta el registro.
+  const fecha_cierre = isValidDate ? new Date(rawClosure.replace(' ', 'T')).toISOString() : '';
 
   // Monto / Presupuesto
   const rawMonto = item.MontoTotal !== undefined ? item.MontoTotal
@@ -195,8 +206,9 @@ export function normalizeApiOpportunity(item: any): LicitacionItem | null {
     : (parseFloat(cleanStr(rawMonto).replace(/[^0-9.-]+/g, '')) || 0);
 
   const descripcion = item.descripcion || item.description || `Proceso de adquisición para ${finalOrganismo}`;
-  const url = item.url || `https://www.mercadopublico.cl/fichaLicitacion.html?code=${finalId.replace(/^CM-/, '')}`;
-  const diasRestantes = typeof item.diasRestantes === 'number' ? item.diasRestantes : 15;
+  const url = item.url || `https://www.mercadopublico.cl/Procurement/Modules/RFB/DetailsAcquisition.aspx?idlicitacion=${encodeURIComponent(finalId.replace(/^CM-/, ''))}`;
+  const msRestantes = fecha_cierre ? new Date(fecha_cierre).getTime() - Date.now() : NaN;
+  const diasRestantes = isNaN(msRestantes) ? 0 : Math.max(0, Math.ceil(msRestantes / (24 * 60 * 60 * 1000)));
 
   return {
     ...item,
@@ -205,18 +217,20 @@ export function normalizeApiOpportunity(item: any): LicitacionItem | null {
     nombre: finalNombre,
     title: finalNombre,
     organismo: finalOrganismo,
+    organismoNombre: finalOrganismo,
     cliente: finalOrganismo,
     comprador,
-    tipo,
+    tipo: classification.tipo,
+    tipo_compra: classification.tipo_compra,
     fecha_cierre,
     fechaCierre: fecha_cierre,
     monto: montoNum,
     montoEstimadoClp: montoNum,
     descripcion,
     diasRestantes,
-    estado: item.estado || 'Publicada',
+    estado: item.estado || item.Estado || 'Sin información',
     url,
-    esUltimos7Dias: item.esUltimos7Dias ?? true,
+    esUltimos7Dias: !isNaN(msRestantes) && msRestantes >= 0 && diasRestantes <= 7,
     tags: Array.isArray(item.tags) ? item.tags : ['Mercado Público']
   };
 }
@@ -227,9 +241,8 @@ export function normalizeApiOpportunity(item: any): LicitacionItem | null {
  */
 export async function fetchOportunidadesMercadoPublico(): Promise<LicitacionItem[]> {
   try {
-    const res = await fetch('/api/opportunities');
-    if (res.ok) {
-      const json = await res.json();
+    const json = await fetchMercadoPublicoJson('/api/opportunities');
+    if (json) {
       const rawItems = Array.isArray(json) ? json : (json.data || json.opportunities || []);
       if (Array.isArray(rawItems) && rawItems.length > 0) {
         return rawItems
@@ -243,9 +256,8 @@ export async function fetchOportunidadesMercadoPublico(): Promise<LicitacionItem
 
   // Endpoint secundario de respaldo directo
   try {
-    const resExt = await fetch('/api/licitaciones/external');
-    if (resExt.ok) {
-      const jsonExt = await resExt.json();
+    const jsonExt = await fetchMercadoPublicoJson('/api/licitaciones/external');
+    if (jsonExt) {
       const listado = Array.isArray(jsonExt.Listado) ? jsonExt.Listado : [];
       if (listado.length > 0) {
         return listado
@@ -260,21 +272,21 @@ export async function fetchOportunidadesMercadoPublico(): Promise<LicitacionItem
   return [];
 }
 
-export async function fetchOrdenesCompraPorFecha(fechaDDMMAAAA: string, ticket: string): Promise<OrdenCompraItem[]> {
+export async function fetchOrdenesCompraPorFecha(fechaDDMMAAAA: string): Promise<OrdenCompraItem[]> {
   try {
     const response = await fetch(
-      `/api/ordenescompra/search?date=${fechaDDMMAAAA}&ticket=${encodeURIComponent(ticket)}`
+      `/api/ordenescompra/search?date=${encodeURIComponent(fechaDDMMAAAA)}`
     );
     if (!response.ok) return [];
     const data = await response.json();
 
     return (data.Listado || []).map((oc: any) => ({
-      id: oc.Codigo || oc.id || `OC-${Date.now()}`,
+      id: oc.Codigo || oc.id || '',
       nombre: oc.Nombre || oc.nombre || 'Orden de Compra',
       organismo: oc.Comprador ? oc.Comprador.NombreOrganismo : (oc.organismo || 'Organismo Público'),
       fecha: fechaDDMMAAAA,
       monto: oc.MontoTotal || oc.total_oc || 0,
-      estado: oc.CodigoEstado === 4 ? 'Aceptada' : 'En Recepción',
+      estado: oc.Estado || (oc.CodigoEstado === 4 ? 'Aceptada' : `Estado ${oc.CodigoEstado ?? 'no informado'}`),
       tipo: 'Orden de Compra'
     }));
   } catch (error) {
@@ -302,76 +314,43 @@ export const getUltimos30Dias = (): string[] => {
 };
 
 // Búsqueda directa por código (Fast-Track) ej: "425-37-LP26"
-export const fetchLicitacionPorCodigo = async (
-  codigo: string,
-  ticket: string = 'F8537A18-6766-4DEF-9E59-426B4FEE2844'
-): Promise<LicitacionItem[]> => {
+export const fetchLicitacionPorCodigo = async (codigo: string): Promise<LicitacionItem[]> => {
   if (!codigo || !codigo.trim()) return [];
   const cleanCode = codigo.trim();
 
   try {
-    let res = await fetch(
-      `https://api.mercadopublico.cl/servicios/v1/publico/licitaciones.json?codigo=${encodeURIComponent(cleanCode)}&ticket=${encodeURIComponent(ticket)}`
+    const data = await fetchMercadoPublicoJson(
+      `/api/licitaciones/external?code=${encodeURIComponent(cleanCode)}`
     );
-    if (!res.ok) {
-      res = await fetch(`/api/licitaciones/external?code=${encodeURIComponent(cleanCode)}&codigo=${encodeURIComponent(cleanCode)}&ticket=${encodeURIComponent(ticket)}`);
-    }
-    if (!res.ok) return [];
-    const data = await res.json();
+    if (!data) return [];
     const rawList = Array.isArray(data?.Listado) ? data.Listado : (Array.isArray(data) ? [data] : []);
-
     return rawList
       .map(normalizeApiOpportunity)
       .filter((item): item is LicitacionItem => item !== null && Boolean(item.id) && Boolean(item.nombre));
   } catch {
-    try {
-      const resProxy = await fetch(`/api/licitaciones/external?code=${encodeURIComponent(cleanCode)}&codigo=${encodeURIComponent(cleanCode)}&ticket=${encodeURIComponent(ticket)}`);
-      if (!resProxy.ok) return [];
-      const dataProxy = await resProxy.json();
-      const rawList = Array.isArray(dataProxy?.Listado) ? dataProxy.Listado : [];
-      return rawList
-        .map(normalizeApiOpportunity)
-        .filter((item): item is LicitacionItem => item !== null && Boolean(item.id) && Boolean(item.nombre));
-    } catch {
-      return [];
-    }
+    return [];
   }
 };
 
 // Función principal que consume los 30 días de la API y unifica los resultados
-export const fetch30DiasMercadoPublico = async (
-  ticket: string = 'F8537A18-6766-4DEF-9E59-426B4FEE2844'
-): Promise<LicitacionItem[]> => {
+export const fetch30DiasMercadoPublico = async (): Promise<LicitacionItem[]> => {
   const fechas = getUltimos30Dias();
-  
-  // Hacemos las peticiones para cada día del rango de 30 días
-  const peticiones = fechas.map(async (fecha) => {
-    try {
-      let res = await fetch(
-        `https://api.mercadopublico.cl/servicios/v1/publico/licitaciones.json?fecha=${fecha}&ticket=${ticket}`
-      );
-      if (!res.ok) {
-        res = await fetch(`/api/licitaciones/external?date=${fecha}&ticket=${encodeURIComponent(ticket)}`);
-      }
-      if (!res.ok) return [];
-      const data = await res.json();
-      return Array.isArray(data?.Listado) ? data.Listado : [];
-    } catch {
-      try {
-        const resProxy = await fetch(`/api/licitaciones/external?date=${fecha}&ticket=${encodeURIComponent(ticket)}`);
-        if (!resProxy.ok) return [];
-        const dataProxy = await resProxy.json();
-        return Array.isArray(dataProxy?.Listado) ? dataProxy.Listado : [];
-      } catch {
-        return [];
-      }
-    }
-  });
 
-  // Esperamos todas las respuestas y unificamos las listas
-  const resultadosPorDia = await Promise.all(peticiones);
+  // Limitamos el barrido para no enviar las 30 fechas en una sola ráfaga.
+  const resultadosPorDia: any[][] = [];
+  for (let index = 0; index < fechas.length; index += 3) {
+    const batch = await Promise.all(
+      fechas.slice(index, index + 3).map(async (fecha) => {
+        const data = await fetchMercadoPublicoJson(
+          `/api/licitaciones/external?date=${fecha}`
+        );
+        return Array.isArray(data?.Listado) ? data.Listado : [];
+      })
+    );
+    resultadosPorDia.push(...batch);
+  }
+
   const todasLasLicitacionesRaw = resultadosPorDia.flat();
-
   // Limpiamos, normalizamos y desduplicamos por ID
   const mapUnique = new Map<string, LicitacionItem>();
 

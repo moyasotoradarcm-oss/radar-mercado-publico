@@ -1,4 +1,5 @@
-import { LicitacionItem, Postulacion, AlertaRule, AlertaNotificacion, SET_PALABRAS_CLAVE_MASTER, OrdenCompraItem } from '../types';
+import { LicitacionItem, Postulacion, AlertaRule, AlertaNotificacion, OrdenCompraItem } from '../types';
+import { SET_PALABRAS_CLAVE_MASTER } from '../config/keywords';
 import { cleanTextPrefixes, createUnifiedOpportunity } from '../lib/searchUtils';
 
 const SEED_LICITACIONES_RAW = [

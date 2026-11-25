@@ -30,11 +30,14 @@ export const ShareModal: React.FC<ShareModalProps> = ({
   const targets = item ? [item] : allItems.slice(0, 5);
 
   const formatText = () => {
+    const empresaNombre = (item?: LicitacionItem) =>
+      item?.organismo || item?.Comprador?.NombreOrganismo || item?.nombreOrganismo || item?.cliente || 'Sin información';
+
     if (item) {
       return (
         `🚨 OPORTUNIDAD MERCADO PÚBLICO: ${item.codigo}\n` +
         `📌 ${cleanTextPrefixes(item.nombre)}\n` +
-        `🏢 Responsable: ${item.cliente}\n` +
+        `🏢 Responsable: ${empresaNombre(item)}\n` +
         `📅 Cierre: ${new Date(item.fechaCierre).toLocaleDateString('es-CL')} (Quedan ${item.diasRestantes} días)\n` +
         `🔗 Ver Ficha Directa: ${getItemOfficialUrl(item)}`
       );
@@ -44,7 +47,7 @@ export const ShareModal: React.FC<ShareModalProps> = ({
         targets
           .map(
             (t) =>
-              `• [${t.codigo}] ${cleanTextPrefixes(t.nombre)}\n  Cliente: ${t.cliente} | Cierre: ${new Date(t.fechaCierre).toLocaleDateString('es-CL')}\n  Enlace: ${getItemOfficialUrl(t)}`
+              `• [${t.codigo}] ${cleanTextPrefixes(t.nombre)}\n  Cliente: ${t?.organismo || t?.Comprador?.NombreOrganismo || t?.nombreOrganismo || t?.cliente || 'Sin información'} | Cierre: ${new Date(t.fechaCierre).toLocaleDateString('es-CL')}\n  Enlace: ${getItemOfficialUrl(t)}`
           )
           .join('\n\n')
       );

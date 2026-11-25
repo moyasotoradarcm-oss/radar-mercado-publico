@@ -1,58 +1,26 @@
-const ACER_URL = 'http://100.121.141.88:8080';
+import { abrirFichaOficial as abrirFichaOficialShared, cleanOfficialId, getFichaUrl as buildFichaUrl, handleOpenFichaSegura } from './openFicha';
 
-export function cleanOfficialId(codigo: string): string {
-  if (!codigo) return '';
-  return codigo.replace(/^CM-/, '').trim();
-}
+export { cleanOfficialId, handleOpenFichaSegura };
 
 export function getItemOfficialUrl(codigoOrItem: any): string {
   return getFichaUrl(codigoOrItem);
 }
 
 export function getFichaUrl(codigoOrItem: any): string {
-  const codigo = typeof codigoOrItem === 'string' 
-    ? codigoOrItem 
-    : (codigoOrItem?.codigo || codigoOrItem?.id || '');
-
-  const cleanId = cleanOfficialId(codigo);
-
-  if (typeof codigoOrItem === 'object' && codigoOrItem?.url?.includes('DetailsAcquisition.aspx')) {
-    return codigoOrItem.url;
-  }
-
-  return `https://www.mercadopublico.cl/fichaLicitacion.html?code=${encodeURIComponent(cleanId)}`;
+  return buildFichaUrl(codigoOrItem);
 }
 
-export async function abrirFichaOficial(codigoLicitacion: string) {
-  const cleanId = cleanOfficialId(codigoLicitacion);
-  const newTab = window.open('about:blank', '_blank');
-
-  try {
-    const res = await fetch(`${ACER_URL}/api/resolve-qs`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ codigo: cleanId }),
-    });
-
-    if (res.ok) {
-      const data = await res.json();
-      if (data.url && newTab) {
-        newTab.location.href = data.url;
-        return;
-      }
-    }
-  } catch (err) {
-    console.warn('Fallback a ficha pública:', err);
-  }
-
-  if (newTab) {
-    newTab.location.href = `https://www.mercadopublico.cl/fichaLicitacion.html?code=${encodeURIComponent(cleanId)}`;
-  }
-}
+export const abrirFichaOficial = abrirFichaOficialShared;
 
 export function extractFechaCierre(item: any): string | null {
   if (!item) return null;
   return item.fecha_cierre || item.FechaCierre || item.fechaCierre || item.fechacierre || null;
+}
+
+export function parseDate(dateStr: any): Date | null {
+  if (!dateStr) return null;
+  const d = new Date(dateStr);
+  return isNaN(d.getTime()) ? null : d;
 }
 
 export function parseChileDate(dateStr: any): Date | null {
@@ -133,12 +101,6 @@ export function formatDate(date: any): string {
 export function formatDateTime(date: any): string {
   if (!date) return '-';
   return formatFechaLimpia(date);
-}
-
-export function parseDate(dateStr: any): Date | null {
-  if (!dateStr) return null;
-  const d = new Date(dateStr);
-  return isNaN(d.getTime()) ? null : d;
 }
 
 export function getDaysRemaining(targetDate: any): number {

@@ -27,9 +27,14 @@ import {
 import { LicitacionItem, Postulacion, AlertaRule, OrdenCompraItem } from '../types';
 import { openGoogleCalendar } from '../lib/googleCalendar';
 import { formatChileDateTime, calculateChileRemainingTime, getItemOfficialUrl, isItemExpired, cleanOfficialId, extractFechaCierre } from '../lib/dateUtils';
-import { matchesSearchTerm, matchesTipoExact, cleanTextPrefixes } from '../lib/searchUtils';
+import { getFichaUrl } from '../lib/openFicha';
+import { getItemSearchableText, matchKeywords, matchesSearchTerm, matchesTipoExact, cleanTextPrefixes } from '../lib/searchUtils';
+import { isCodigoLicitacion } from '../lib/processClassification';
 import { CreateAlertModal } from './CreateAlertModal';
+import { OrganismoName } from './OrganismoName';
+import { KeywordClusterFilter } from './KeywordClusterFilter';
 import { fetchLicitacionPorCodigo } from '../services/mercadoPublicoApi';
+import { type KeywordClusterKey } from '../config/keywords';
 
 interface DashboardViewProps {
   licitaciones: LicitacionItem[];
@@ -66,11 +71,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     if (!debouncedTableSearch) return;
     const cleanTerm = debouncedTableSearch.trim();
 
-    const isCodePattern = /^[0-9a-zA-Z]+-[0-9a-zA-Z]+-[0-9a-zA-Z]+/i.test(cleanTerm) ||
-                          /^(CM|CO|COT)-[0-9a-zA-Z]+/i.test(cleanTerm) ||
-                          /^[0-9]{4,}-[0-9a-zA-Z]+/i.test(cleanTerm);
-
-    if (isCodePattern) {
+    if (isCodigoLicitacion(cleanTerm)) {
       fetchLicitacionPorCodigo(cleanTerm).then((found) => {
         if (found && found.length > 0 && onFastTrackSearchResult) {
           onFastTrackSearchResult(found);
@@ -82,8 +83,15 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   const [tableTipo, setTableTipo] = useState<string>('Todas');
   const [tableStatus, setTableStatus] = useState<'ACTIVAS' | 'VENCIDAS' | 'TODAS'>('ACTIVAS');
   const [filterMatch, setFilterMatch] = useState(false);
+  const [selectedKeywordClusters, setSelectedKeywordClusters] = useState<KeywordClusterKey[]>([]);
   const [isTableExpanded, setIsTableExpanded] = useState(true);
   const [alertModalItem, setAlertModalItem] = useState<LicitacionItem | null>(null);
+
+  const toggleKeywordCluster = (cluster: KeywordClusterKey) => {
+    setSelectedKeywordClusters((current) => current.includes(cluster)
+      ? current.filter((selected) => selected !== cluster)
+      : [...current, cluster]);
+  };
 
   const safeLicitaciones = useMemo(() => licitaciones || [], [licitaciones]);
   const safePostulaciones = useMemo(() => postulaciones || [], [postulaciones]);
@@ -109,6 +117,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       if (filterMatch && (!item.matchScore || item.matchScore < 75)) {
         return false;
       }
+      if (selectedKeywordClusters.length && !matchKeywords(getItemSearchableText(item), selectedKeywordClusters).matches.length) {
+        return false;
+      }
 
       const hasSearchQuery = Boolean(debouncedTableSearch && debouncedTableSearch.trim());
 
@@ -131,7 +142,18 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
       return true;
     });
-  }, [safeLicitaciones, tableStatus, debouncedTableSearch, tableTipo]);
+  }, [safeLicitaciones, tableStatus, debouncedTableSearch, tableTipo, selectedKeywordClusters, filterMatch]);
+
+  const handleOpenFicha = (e: React.MouseEvent<HTMLButtonElement>, item: LicitacionItem) => {
+    e.stopPropagation();
+    e.preventDefault();
+    const fichaUrl = getFichaUrl(item);
+    if (!fichaUrl) {
+      console.error('No se encontró el código de la licitación', item);
+      return;
+    }
+    window.open(fichaUrl, '_blank', 'noopener,noreferrer');
+  };
 
   return (
     <div className="space-y-8 pb-12">
@@ -382,6 +404,11 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 </div>
               </div>
 
+              <KeywordClusterFilter
+                selectedClusters={selectedKeywordClusters}
+                onToggle={toggleKeywordCluster}
+              />
+
               {/* Process Type Filter Buttons Bar */}
               <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-200/80">
                 <div className="flex flex-wrap items-center gap-1.5">
@@ -489,8 +516,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                               )}
                             </div>
                           </td>
-                          <td className="max-w-[220px] truncate pr-4 text-slate-700 font-medium" title={item.organismo || item.organismo_limpio || item.cliente}>
-                            {item.organismo || item.organismo_limpio || item.cliente}
+                          <td className="max-w-[220px] truncate pr-4 text-slate-700 font-medium">
+                            <OrganismoName item={item} />
                           </td>
                           <td className="w-[120px] text-left whitespace-nowrap">
                             <span
@@ -527,17 +554,20 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                           </td>
                           <td className="py-3 px-4 text-right whitespace-nowrap">
                             <div className="flex items-center justify-end space-x-1.5">
-                              <a
-                                href={getItemOfficialUrl(item)}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="inline-flex items-center space-x-1 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold px-2 py-1 rounded-lg border border-slate-200 transition text-[11px]"
+                              <button
+                                type="button"
+                                onClick={(e) => handleOpenFicha(e, item)}
+                                className="inline-flex items-center space-x-1 bg-orange-600 hover:bg-orange-500 text-white font-medium px-3 py-1.5 rounded-lg text-xs shadow-sm transition-colors"
                               >
                                 <span>Ficha</span>
-                              </a>
+                              </button>
 
                               <button
-                                onClick={() => onSelectLicitacionAI?.(item)}
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  onSelectLicitacionAI?.(item);
+                                }}
                                 className="bg-blue-600 hover:bg-blue-700 text-white px-2 py-1 rounded-lg font-bold text-[11px] transition shadow-xs"
                               >
                                 Evaluar IA
@@ -640,26 +670,29 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
                   <div className="pt-2 border-t border-slate-100 text-xs text-slate-600 flex justify-between">
                     <span>Organismo:</span>
-                    <strong className="text-slate-800 truncate max-w-[180px]" title={item.organismo || item.organismo_limpio || item.cliente}>
-                      {item.organismo || item.organismo_limpio || item.cliente}
+                    <strong className="text-slate-800 truncate max-w-[180px]">
+                      <OrganismoName item={item} />
                     </strong>
                   </div>
                 </div>
 
                 <div className="p-3 bg-slate-50 border-t border-slate-100 flex items-center justify-between">
-                  <a
-                    href={getItemOfficialUrl(item)}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-xs text-slate-700 font-bold hover:underline flex items-center space-x-1"
+                  <button
+                    type="button"
+                    onClick={(e) => handleOpenFicha(e, item)}
+                    className="text-xs bg-orange-600 hover:bg-orange-500 text-white font-medium px-3 py-1.5 rounded-lg shadow-sm flex items-center space-x-1 transition-colors"
                   >
                     <ExternalLink className="w-3.5 h-3.5" />
                     <span>Ver Ficha</span>
-                  </a>
+                  </button>
 
                   <div className="flex items-center space-x-1.5">
                     <button
-                      onClick={() => onSelectLicitacionAI?.(item)}
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onSelectLicitacionAI?.(item);
+                      }}
                       className="bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs px-2.5 py-1 rounded-lg"
                     >
                       Evaluar IA

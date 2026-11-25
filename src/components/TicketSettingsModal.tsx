@@ -6,7 +6,8 @@ interface TicketSettingsModalProps {
 }
 
 export const TicketSettingsModal: React.FC<TicketSettingsModalProps> = ({ onClose }) => {
-  const [ticket, setTicket] = useState('DA0DDB29-A6DB-4B60-A862-AFCAD7FC31F8');
+  const [ticket, setTicket] = useState('');
+  const [ticketMasked, setTicketMasked] = useState('');
   const [saved, setSaved] = useState(false);
   const [loading, setLoading] = useState(false);
 
@@ -16,7 +17,7 @@ export const TicketSettingsModal: React.FC<TicketSettingsModalProps> = ({ onClos
         const res = await fetch('/api/settings/ticket');
         if (res.ok) {
           const data = await res.json();
-          if (data.ticket) setTicket(data.ticket);
+          setTicketMasked(data.configured ? data.ticket : '');
         }
       } catch {
         // ignore
@@ -68,11 +69,13 @@ export const TicketSettingsModal: React.FC<TicketSettingsModalProps> = ({ onClos
                 required
                 value={ticket}
                 onChange={(e) => setTicket(e.target.value)}
+                autoComplete="off"
+                placeholder={ticketMasked ? `Configurado (${ticketMasked})` : 'No configurado'}
                 className="w-full pl-9 pr-3 py-2.5 text-xs font-mono font-semibold border rounded-xl bg-slate-50 focus:bg-white"
               />
             </div>
             <p className="text-[11px] text-slate-500 mt-1.5 leading-relaxed">
-              Ticket por defecto activado: <code className="bg-slate-100 px-1 py-0.5 rounded font-mono">DA0DDB29-A6DB-4B60-A862-AFCAD7FC31F8</code>. Puedes cambiarlo si utilizas tu propio ticket de desarrollador registrado en Mercado Público.
+              El valor permanente se define en el servidor (variable MERCADOPUBLICO_TICKET). Lo que ingreses aquí dura hasta el próximo reinicio.
             </p>
           </div>
 

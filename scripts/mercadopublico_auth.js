@@ -16,6 +16,10 @@ import path from 'path';
 
 // Archivo para persistencia de cookies y estado de sesión
 const SESSION_FILE = path.join(process.cwd(), 'session_mp.json');
+const LOGIN_URL = 'https://www.mercadopublico.cl/Home';
+const SSO_HOSTS = new Set(['heimdall.mercadopublico.cl', 'accounts.claveunica.gob.cl']);
+const PORTAL_HOSTS = new Set(['www.mercadopublico.cl', 'mercadopublico.cl', 'conveniomarco2.mercadopublico.cl']);
+const pagesThatVisitedSso = new WeakSet();
 
 // Map global para mantener sesiones activas esperando el código 2FA desde la interfaz web o API
 const pending2FASessions = new Map();
@@ -32,6 +36,53 @@ function promptCLI(queryText) {
       resolve(answer.trim());
     });
   });
+}
+
+function watchSsoRedirects(page) {
+  page.on('framenavigated', (frame) => {
+    if (frame !== page.mainFrame()) return;
+    try {
+      if (SSO_HOSTS.has(new URL(frame.url()).hostname)) pagesThatVisitedSso.add(page);
+    } catch {
+      // Ignore transient navigation URLs.
+    }
+  });
+}
+
+async function waitForAuthenticatedPortal(page, timeoutMs = 45000) {
+  let sawSso = pagesThatVisitedSso.has(page);
+  const deadline = Date.now() + timeoutMs;
+  const authSelectors = 'input[type="password"], input[autocomplete="one-time-code"], input[name="otp"], input[name="code"]';
+
+  while (Date.now() < deadline) {
+    let hostname = '';
+    try {
+      hostname = new URL(page.url()).hostname;
+    } catch {
+      // Continue polling while the browser transitions between SSO pages.
+    }
+
+    if (SSO_HOSTS.has(hostname)) {
+      sawSso = true;
+      pagesThatVisitedSso.add(page);
+    }
+
+    if (sawSso && PORTAL_HOSTS.has(hostname)) {
+      const authControls = await page.$$(authSelectors);
+      let hasVisibleAuthControl = false;
+      for (const control of authControls) {
+        if (await control.isIntersectingViewport().catch(() => false)) {
+          hasVisibleAuthControl = true;
+          break;
+        }
+      }
+      if (!hasVisibleAuthControl) return page.url();
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 300));
+  }
+
+  throw new Error(`No se confirmó el retorno post-SSO a Mercado Público; URL actual: ${page.url()}`);
 }
 
 async function getExecutablePath() {
@@ -76,14 +127,18 @@ async function getExecutablePath() {
  * Endpoint: https://api.mercadopublico.cl/servicios/v1/publico/licitaciones.json?codigo={ID_LICITACION}&ticket={TICKET}
  */
 async function fetchOfficialMpDateByCode(itemCode, itemType = '') {
-  const ticket = process.env.MERCADOPUBLICO_TICKET || process.env.MP_TICKET || "DA0DDB29-A6DB-4B60-A862-AFCAD7FC31F8";
+  const ticket = process.env.MERCADOPUBLICO_TICKET || process.env.MP_TICKET || "";
+  if (!ticket) {
+    console.warn("⚠️ MERCADOPUBLICO_TICKET no configurado; se omite la consulta a la API oficial.");
+    return null;
+  }
   const cleanCode = String(itemCode).replace(/^CM-/, '').replace(/^(ID|Código|Codigo)\s*:?\s*/i, '').trim().toUpperCase();
   const isCot = String(itemCode).toUpperCase().includes('COT') || String(itemType).toUpperCase().includes('AGIL');
   const isCM = String(itemCode).toUpperCase().startsWith('CM-') || String(itemType).toUpperCase().includes('CONVENIO');
 
   const apiUrl = `https://api.mercadopublico.cl/servicios/v1/publico/licitaciones.json?codigo=${encodeURIComponent(cleanCode)}&ticket=${encodeURIComponent(ticket)}`;
 
-  console.log(`📡 Consultando API REST Oficial de Mercado Público para ${cleanCode} (${apiUrl})...`);
+  console.log(`📡 Consultando API REST Oficial de Mercado Público para ${cleanCode}...`);
 
   try {
     const res = await fetch(apiUrl, {
@@ -146,7 +201,7 @@ async function fetchOfficialMpDateByCode(itemCode, itemType = '') {
       fechasObj: fechas
     };
   } catch (err) {
-    console.error(`Error al extraer fecha para: ${cleanCode} (URL: ${apiUrl}) - Detalle: ${err.message}`);
+    console.error(`Error al extraer fecha para: ${cleanCode} - Detalle: ${err.message}`);
     return null;
   }
 }
@@ -385,7 +440,7 @@ export async function submit2FACode(sessionId, code) {
   pending2FASessions.delete(sid);
 
   try {
-    console.log(`🔑 Aplicando código Authenticator (${code}) en el navegador Puppeteer activo...`);
+    console.log('🔑 Aplicando código Authenticator en el navegador Puppeteer activo...');
 
     const otpSelectors = [
       '#otpCode',
@@ -438,9 +493,8 @@ export async function submit2FACode(sessionId, code) {
       await page.keyboard.press('Enter');
     }
 
-    await new Promise(r => setTimeout(r, 4000));
-
-    console.log('💾 Autenticación completada. Capturando y guardando nueva sesión activa...');
+    const authenticatedUrl = await waitForAuthenticatedPortal(page);
+    console.log(`💾 Retorno post-SSO confirmado en ${authenticatedUrl}. Guardando cookies...`);
     const savedCookies = await page.cookies();
     fs.writeFileSync(SESSION_FILE, JSON.stringify({ cookies: savedCookies, timestamp: new Date().toISOString() }, null, 2), 'utf-8');
 
@@ -470,16 +524,6 @@ async function runMercadoPublicoAuth(options = {}) {
   console.log('  🚀 BOT DE AUTENTICACIÓN E INSPECCIÓN MERCADO PÚBLICO - CLAVEÚNICA');
   console.log('================================================================\n');
 
-  // Limpieza previa: eliminar siempre session_mp.json y no reutilizar cookies previas
-  if (fs.existsSync(SESSION_FILE)) {
-    try {
-      fs.unlinkSync(SESSION_FILE);
-      console.log('🧹 Limpieza previa: Archivo session_mp.json eliminado para inicio de sesión limpio sin cookies guardadas.');
-    } catch (e) {
-      console.warn('⚠️ No se pudo eliminar session_mp.json:', e.message);
-    }
-  }
-
   const rut = options.rut || process.env.CU_RUT;
   const password = options.password || process.env.CU_PASSWORD;
 
@@ -504,6 +548,7 @@ async function runMercadoPublicoAuth(options = {}) {
     browser = await puppeteer.launch(launchOptions);
 
     page = await browser.newPage();
+    watchSsoRedirects(page);
     await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36');
 
     // Deshabilitar caché del navegador simulado y agregar cabeceras anti-caché
@@ -524,18 +569,14 @@ async function runMercadoPublicoAuth(options = {}) {
       await client.send('Network.clearBrowserCache').catch(() => {});
     }
 
-    console.log('🌐 Paso 1: Abriendo portal de login de ClaveÚnica / Mercado Público...');
-    try {
-      await page.goto('https://proveedor.mercadopublico.cl/', { waitUntil: 'domcontentloaded' });
-    } catch (e) {
-      await page.goto('https://www.mercadopublico.cl/Home/Login', { waitUntil: 'domcontentloaded' });
-    }
+    console.log(`🌐 Paso 1: Abriendo portal oficial ${LOGIN_URL}...`);
+    await page.goto(LOGIN_URL, { waitUntil: 'domcontentloaded' });
 
     await new Promise(r => setTimeout(r, 2000));
 
     // Paso 1: Ingresar credenciales RUT y Contraseña
     if (rut && password) {
-      console.log(`👤 Ingresando credenciales ClaveÚnica para RUT: ${rut}...`);
+      console.log('👤 Ingresando credenciales ClaveÚnica...');
       const rutInput = await page.$('#run, #rut, input[name="run"], input[name="rut"]');
       const passInput = await page.$('#password, input[name="password"], input[type="password"]');
 
@@ -613,7 +654,7 @@ async function runMercadoPublicoAuth(options = {}) {
 
       // Si el usuario ya ingresó el código 2FA de 6 dígitos en el modal inicial, aplicarlo inmediatamente
       if (userProvidedCode && userProvidedCode.length >= 6) {
-        console.log(`⚡ Código Authenticator (${userProvidedCode}) provisto en el formulario inicial. Aplicando inmediatamente...`);
+        console.log('⚡ Código Authenticator provisto en el formulario inicial. Aplicando inmediatamente...');
         return await submit2FACode(sessionId, userProvidedCode);
       }
 
@@ -634,6 +675,11 @@ async function runMercadoPublicoAuth(options = {}) {
         message: 'Ingrese el código de 6 dígitos de su Authenticator'
       };
     }
+
+    const authenticatedUrl = await waitForAuthenticatedPortal(page);
+    console.log(`💾 Retorno post-SSO confirmado en ${authenticatedUrl}. Guardando cookies...`);
+    const savedCookies = await page.cookies();
+    fs.writeFileSync(SESSION_FILE, JSON.stringify({ cookies: savedCookies, timestamp: new Date().toISOString() }, null, 2), 'utf-8');
 
     // Extraer oportunidades si no se requirió 2FA
     const oportunidades = await extractOpportunities(page);

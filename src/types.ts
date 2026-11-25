@@ -1,27 +1,7 @@
 export type TipoProceso = 'Licitación' | 'Convenio Marco' | 'Compra Ágil' | 'Licitacion' | 'Compra Agil' | 'Orden de Compra';
 
-export const SET_PALABRAS_CLAVE_MASTER = [
-  // 1. Google Maps, GIS y Geolocalización
-  "google maps", "maps api", "geolocalizacion", "gis", "visor territorial", 
-  "visor geografico", "creditos google", "comisaria virtual",
-
-  // 2. Infraestructura Cloud y Servicios Nube
-  "gcp", "google cloud", "aws", "azure", "cloud", "nube", "saas", 
-  "secops", "workspace",
-
-  // 3. Desarrollo de Software e Inteligencia Artificial
-  "desarrollo", "software", "mantencion evolutiva", "soporte de sistemas", 
-  "gemini", "ia", "ai", "microservicios", "ui/ux", "api", "licencia de software", "selico",
-
-  // 4. Datos, BI, ETL y Analítica
-  "bi", "power bi", "qlik", "qlik sense", "etl", "gobernanza de datos", 
-  "migracion de datos", "datos", "dashboard", "ai-first",
-
-  // 5. Gestión Documental, Process & Firma
-  "gestor documental", "gestion documental", "bpm", "firma digital", "digitalizacion"
-] as const;
-
-export const SET_PALABRAS_CLAVE = SET_PALABRAS_CLAVE_MASTER;
+export { SET_PALABRAS_CLAVE_MASTER } from './config/keywords';
+export { SET_PALABRAS_CLAVE } from './config/keywords';
 
 export interface LicitacionItem {
   // Required Unified Properties
@@ -120,6 +100,7 @@ export interface AlertaNotificacion {
 
 export interface GeminiAnalysisResult {
   matchScore: number; // 0 to 100
+  fallback?: boolean; // true cuando el resultado no proviene de Gemini
   resumenEjecutivo: string;
   requisitosClave: string[];
   riesgosDetectados: string[];

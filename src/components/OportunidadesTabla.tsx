@@ -1,7 +1,13 @@
 import React, { useState, useMemo } from 'react';
 import { Oportunidad } from '../types';
 import { getItemOfficialUrl, cleanOfficialId, formatChileDateTime, formatFechaLimpia } from '../lib/dateUtils';
+import { getFichaUrl } from '../lib/openFicha';
+import { OrganismoName } from './OrganismoName';
 import { Buscador } from './Buscador';
+import { ReportExportActions } from './ReportExportActions';
+import { KeywordClusterFilter } from './KeywordClusterFilter';
+import { type KeywordClusterKey } from '../config/keywords';
+import { getItemSearchableText, matchKeywords, matchesSearchTerm } from '../lib/searchUtils';
 
 interface Props {
   oportunidades?: Oportunidad[];
@@ -27,33 +33,68 @@ export const OportunidadesTabla: React.FC<Props> = ({
   onAddPostulacion,
 }) => {
   const [searchTerm, setSearchTerm] = useState('');
+  const [selectedClusters, setSelectedClusters] = useState<KeywordClusterKey[]>([]);
+
+  const toggleCluster = (cluster: KeywordClusterKey) => {
+    setSelectedClusters((current) => current.includes(cluster)
+      ? current.filter((selected) => selected !== cluster)
+      : [...current, cluster]);
+  };
 
   const rawList = oportunidades || items || [];
 
   const dataList: Oportunidad[] = useMemo(() => {
-    return rawList.map((it: any) => ({
-      id: it.id || it.codigo || '',
-      nombre: it.nombre || it.licitacionNombre || '',
-      organismo: it.organismo || it.organismo_limpio || it.cliente || '',
-      organismo_limpio: it.organismo_limpio || it.organismo || it.cliente || '',
-      tipo: it.tipo || 'Licitación',
-      fecha_cierre: it.fecha_cierre || it.fechaCierre || '',
-      diasRestantes: it.diasRestantes,
-      url: it.url,
-      ...it,
-    }));
+    return rawList.map((it: any) => {
+      const nombre = it.Nombre || it.nombre || 'Sin título';
+      const organismoRaw = it?.Comprador?.NombreOrganismo ||
+        it?.organismoNombre ||
+        it?.organismo?.nombre ||
+        it?.NombreOrganismo ||
+        (typeof it?.organismo === 'string' ? it.organismo : null) ||
+        it?.nombreOrganismo ||
+        (typeof it?.Organismo === 'string' ? it.Organismo : null);
+      const organismo = typeof organismoRaw === 'string' &&
+        organismoRaw.trim() &&
+        organismoRaw.trim() !== String(it.Nombre || it.nombre || '').trim() &&
+        !['sin organismo', 'organismo no especificado', 'organismo mercado público'].includes(organismoRaw.trim().toLowerCase())
+        ? organismoRaw.trim()
+        : 'Mercado Público (Ver Ficha)';
+
+      return {
+        ...it,
+        id: it.id || it.codigo || '',
+        nombre,
+        organismo,
+        organismoNombre: organismo,
+        organismo_limpio: organismo,
+        tipo: it.tipo || 'Licitación',
+        fecha_cierre: it.fecha_cierre || it.fechaCierre || '',
+        diasRestantes: it.diasRestantes,
+        url: it.url,
+      };
+    });
   }, [rawList]);
 
   const filteredData = useMemo(() => {
-    const term = searchTerm.toLowerCase().trim();
-    if (!term) return dataList;
     return dataList.filter(
-      (item) =>
-        (item.id && item.id.toLowerCase().includes(term)) ||
-        (item.nombre && item.nombre.toLowerCase().includes(term)) ||
-        (item.organismo && item.organismo.toLowerCase().includes(term))
+      (item) => {
+        if (!matchesSearchTerm(item, searchTerm)) return false;
+        if (selectedClusters.length && !matchKeywords(getItemSearchableText(item), selectedClusters).matches.length) return false;
+        return true;
+      }
     );
-  }, [dataList, searchTerm]);
+  }, [dataList, searchTerm, selectedClusters]);
+
+  const handleOpenFicha = (e: React.MouseEvent<HTMLButtonElement>, item: Oportunidad) => {
+    e.stopPropagation();
+    e.preventDefault();
+    const fichaUrl = getFichaUrl(item);
+    if (!fichaUrl) {
+      console.error('No se encontró el código de la licitación', item);
+      return;
+    }
+    window.open(fichaUrl, '_blank', 'noopener,noreferrer');
+  };
 
   const handleEvaluar = (item: Oportunidad) => {
     if (onEvaluarIA) {
@@ -103,7 +144,9 @@ export const OportunidadesTabla: React.FC<Props> = ({
         <span style={{ fontSize: '12px', color: '#94a3b8', fontFamily: 'monospace' }}>
           {(filteredData || []).length} de {(dataList || []).length}
         </span>
+        <ReportExportActions items={filteredData} className="ml-auto" />
       </div>
+      <KeywordClusterFilter selectedClusters={selectedClusters} onToggle={toggleCluster} className="mb-3" />
 
       {/* CONTENEDOR GRID DE ANCHOS ESTRICTOS (ELIMINA EL ESPACIO SOBRANTE) */}
       <div style={{ width: '100%', overflowX: 'auto', border: '1px solid #1e293b', borderRadius: '8px' }}>
@@ -134,7 +177,24 @@ export const OportunidadesTabla: React.FC<Props> = ({
               {searchTerm ? `No se encontraron resultados para "${searchTerm}"` : 'No se encontraron oportunidades registradas.'}
             </div>
           ) : (
-            (filteredData || []).map((item) => (
+            (filteredData || []).map((item) => {
+              const organismoCandidate = [
+                item?.Comprador?.NombreOrganismo,
+                item?.NombreOrganismo,
+                item?.organismoNombre,
+                (item as any)?.organismo?.nombre,
+                item?.organismo,
+                item?.nombreOrganismo,
+                typeof item?.Organismo === 'string' ? item.Organismo : null
+              ].find((value) =>
+                typeof value === 'string' &&
+                value.trim() &&
+                value.trim() !== String(item.Nombre || item.nombre || '').trim() &&
+                !['sin organismo', 'organismo no especificado', 'organismo mercado público'].includes(value.trim().toLowerCase())
+              );
+              const organismoDisplay = organismoCandidate || 'Mercado Público (Ver Ficha)';
+
+              return (
               <div
                 key={item.id || Math.random()}
                 className="grid grid-cols-[130px_200px_200px_110px_150px_auto] items-center gap-2"
@@ -155,8 +215,8 @@ export const OportunidadesTabla: React.FC<Props> = ({
                 </div>
 
                 {/* 3. ORGANISMO */}
-                <div className="max-w-[200px] truncate pr-4 text-slate-300" title={item.organismo || item.organismo_limpio || ''}>
-                  {item.organismo}
+                <div className="max-w-[200px] truncate pr-4 text-slate-300" title={organismoDisplay}>
+                  <OrganismoName item={item} fallback={organismoDisplay} />
                 </div>
 
                 {/* 4. TIPO DE COMPRA */}
@@ -215,33 +275,39 @@ export const OportunidadesTabla: React.FC<Props> = ({
                     🔔 Alerta
                   </button>
 
-                  {/* Botón Postular / Ficha */}
-                  <a
-                    href={getItemOfficialUrl({ codigo: item.codigo || item.id, tipo: item.tipo, url: item.url })}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      if (onAddPostulacion) {
-                        onAddPostulacion(item);
-                      }
-                    }}
-                    style={{
-                      padding: '5px 9px',
-                      backgroundColor: '#2563eb',
-                      color: '#ffffff',
-                      borderRadius: '4px',
-                      fontSize: '11px',
-                      fontWeight: 'bold',
-                      textDecoration: 'none',
-                      display: 'inline-block',
-                    }}
+                  {/* Botones Ficha y Postular */}
+                  <button
+                    type="button"
+                    onClick={(e) => handleOpenFicha(e, item)}
+                    className="bg-orange-600 hover:bg-orange-500 text-white font-medium px-3 py-1.5 rounded-lg text-xs shadow-sm transition-colors"
                   >
-                    Postular ↗
-                  </a>
+                    Ficha ↗
+                  </button>
+                  {onAddPostulacion && (
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onAddPostulacion(item);
+                      }}
+                      style={{
+                        padding: '5px 9px',
+                        backgroundColor: '#2563eb',
+                        color: '#ffffff',
+                        border: 'none',
+                        borderRadius: '4px',
+                        fontSize: '11px',
+                        fontWeight: 'bold',
+                        cursor: 'pointer',
+                      }}
+                    >
+                      Postular
+                    </button>
+                  )}
                 </div>
               </div>
-            ))
+              );
+            })
           )}
         </div>
       </div>

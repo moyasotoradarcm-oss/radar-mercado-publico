@@ -1,16 +1,19 @@
 {
-  "name": "react-example",
+  "name": "radar-mercado-publico",
   "private": true,
   "version": "0.0.0",
   "type": "module",
   "scripts": {
     "dev": "tsx server.ts",
-    "build": "PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 vite build && esbuild server.ts --bundle --platform=node --format=cjs --packages=external --sourcemap --outfile=dist/server.cjs",
-    "start": "node dist/server.cjs",
+    "build": "PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 vite build && esbuild server.ts --bundle --platform=node --format=cjs --packages=external --sourcemap --outfile=dist-server/server.cjs",
+    "start": "NODE_ENV=production node dist-server/server.cjs",
     "preview": "vite preview",
-    "clean": "rm -rf dist server.cjs",
+    "clean": "rm -rf dist dist-server server.cjs",
     "scrape:mp": "node scripts/mercadopublico_auth.js",
-    "lint": "tsc --noEmit"
+    "scrape:cm": "tsx scripts/scrapeConvenioMarco.ts",
+    "scrape:login": "tsx scripts/scrapeConvenioMarco.ts --login",
+    "lint": "tsc --noEmit",
+    "check-types": "tsc --noEmit"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",
@@ -20,6 +23,7 @@
     "@vitejs/plugin-react": "^5.0.4",
     "docx": "^9.7.1",
     "dotenv": "^17.2.3",
+    "exceljs": "^4.4.0",
     "express": "^4.21.2",
     "jspdf": "^4.2.1",
     "jspdf-autotable": "^5.0.8",

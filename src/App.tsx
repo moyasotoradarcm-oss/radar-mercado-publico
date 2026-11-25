@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { Header } from './components/Header';
 import { DashboardView } from './components/DashboardView';
 import { LicitacionesRadarView } from './components/LicitacionesRadarView';
@@ -13,26 +13,20 @@ import { SystemSettingsModal } from './components/SystemSettingsModal';
 import { AuthModal } from './components/AuthModal';
 import { OrdenesCompraView } from './components/OrdenesCompraView';
 import { HistorialEvaluacionesView } from './components/HistorialEvaluacionesView';
-import {
-  INITIAL_LICITACIONES,
-  INITIAL_POSTULACIONES,
-  INITIAL_ALERTAS,
-  INITIAL_NOTIFICACIONES,
-  INITIAL_ORDENES_COMPRA
-} from './data/mockData';
 import { LicitacionItem, Postulacion, AlertaRule, AlertaNotificacion, OrdenCompraItem } from './types';
-import { fetchOportunidadesMercadoPublico, fetch30DiasMercadoPublico } from './services/mercadoPublicoApi';
+import { fetchOportunidadesMercadoPublico, fetch30DiasMercadoPublico, getLastApiWarning, resetApiWarning } from './services/mercadoPublicoApi';
 import { filterOportunidades } from './utils/filterOportunidades';
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<'dashboard' | 'radar' | 'ordenescompra' | 'oc' | 'postulaciones' | 'calendar' | 'compradores' | 'alertas' | 'alerts' | 'historial-ia'>('dashboard');
 
-  const [licitaciones, setLicitaciones] = useState<LicitacionItem[]>(INITIAL_LICITACIONES);
-  const [postulaciones, setPostulaciones] = useState<Postulacion[]>(INITIAL_POSTULACIONES);
-  const [ordenesCompra, setOrdenesCompra] = useState<OrdenCompraItem[]>(INITIAL_ORDENES_COMPRA);
-  const [alertas, setAlertas] = useState<AlertaRule[]>(INITIAL_ALERTAS);
-  const [notificaciones, setNotificaciones] = useState<AlertaNotificacion[]>(INITIAL_NOTIFICACIONES);
+  const [licitaciones, setLicitaciones] = useState<LicitacionItem[]>([]);
+  const [postulaciones, setPostulaciones] = useState<Postulacion[]>([]);
+  const [ordenesCompra, setOrdenesCompra] = useState<OrdenCompraItem[]>([]);
+  const [alertas, setAlertas] = useState<AlertaRule[]>([]);
+  const [notificaciones, setNotificaciones] = useState<AlertaNotificacion[]>([]);
   const [isLoadingApi, setIsLoadingApi] = useState<boolean>(false);
+  const [apiNotice, setApiNotice] = useState<string | null>(null);
 
   // Modals state
   const [aiEvaluatorItem, setAiEvaluatorItem] = useState<LicitacionItem | null>(null);
@@ -50,10 +44,11 @@ export default function App() {
 
     const loadOpportunitiesFromAPI = async () => {
       setIsLoadingApi(true);
+      setApiNotice(null);
+      resetApiWarning();
       try {
-        const ticket = 'F8537A18-6766-4DEF-9E59-426B4FEE2844';
         const [api30Dias, apiOportunidades] = await Promise.all([
-          fetch30DiasMercadoPublico(ticket),
+          fetch30DiasMercadoPublico(),
           fetchOportunidadesMercadoPublico()
         ]);
 
@@ -63,29 +58,24 @@ export default function App() {
         // Aplicar filtro: Conserva vigentes y vencidas hace menos de 24h
         const vigentesYRecientes = filterOportunidades(combinedItems);
 
-        if (isMounted && vigentesYRecientes.length > 0) {
-          setLicitaciones((prevList) => {
-            const catalogMap = new Map<string, LicitacionItem>();
-            
-            // 1. Cargar catálogo inicial/existente que cumpla la regla de vigencia
-            filterOportunidades(prevList).forEach((item) => {
-              if (item && (item.id || item.codigo)) {
-                catalogMap.set((item.id || item.codigo).toUpperCase(), item);
-              }
-            });
+        if (!isMounted) return;
+        const catalogMap = new Map<string, LicitacionItem>();
+        vigentesYRecientes.forEach((item) => {
+          if (item && (item.id || item.codigo)) {
+            catalogMap.set((item.id || item.codigo).toUpperCase(), item);
+          }
+        });
+        setLicitaciones(Array.from(catalogMap.values()));
 
-            // 2. Fusionar con licitaciones vigentes traídas de la API
-            vigentesYRecientes.forEach((item) => {
-              if (item && (item.id || item.codigo)) {
-                catalogMap.set((item.id || item.codigo).toUpperCase(), item);
-              }
-            });
-
-            return Array.from(catalogMap.values());
-          });
+        const warning = getLastApiWarning();
+        if (warning) {
+          setApiNotice(`Datos incompletos: ${warning}`);
+        } else if (catalogMap.size === 0) {
+          setApiNotice('La API de Mercado Público no devolvió licitaciones vigentes.');
         }
       } catch (err) {
         console.warn('⚠️ Error al consultar la API de Mercado Público:', err);
+        if (isMounted) setApiNotice('No fue posible obtener datos de Mercado Público. No se muestran datos de ejemplo.');
       } finally {
         if (isMounted) {
           setIsLoadingApi(false);
@@ -101,7 +91,7 @@ export default function App() {
   }, []);
 
   // Incorporar resultados puntuales de búsqueda por código (Fast-Track)
-  const handleAddFastTrackItems = (newItems: LicitacionItem[]) => {
+  const handleAddFastTrackItems = useCallback((newItems: LicitacionItem[]) => {
     if (!newItems || newItems.length === 0) return;
     setLicitaciones((prevList) => {
       const catalogMap = new Map<string, LicitacionItem>();
@@ -117,7 +107,7 @@ export default function App() {
       });
       return Array.from(catalogMap.values());
     });
-  };
+  }, []);
 
   // Filtrado reactivo de licitaciones vigentes y límite de renderizado para evitar lag en el DOM
   const licitacionesFiltradasVigentes = useMemo(() => {
@@ -142,6 +132,16 @@ export default function App() {
       />
 
       <main className="flex-1 max-w-7xl w-full mx-auto p-4 md:p-6">
+        {isLoadingApi && (
+          <div className="mb-4 rounded-xl border border-blue-500/40 bg-blue-500/10 px-4 py-2 text-sm text-blue-200">
+            Consultando la API oficial de Mercado Público…
+          </div>
+        )}
+        {!isLoadingApi && apiNotice && (
+          <div role="alert" className="mb-4 rounded-xl border border-amber-500/40 bg-amber-500/10 px-4 py-2 text-sm text-amber-200">
+            {apiNotice}
+          </div>
+        )}
         {activeTab === 'dashboard' && (
           <DashboardView
             licitaciones={licitacionesFiltradasVigentes}
@@ -223,7 +223,7 @@ export default function App() {
 
         {(activeTab === 'ordenescompra' || activeTab === 'oc') && (
           <OrdenesCompraView
-            ordenesCompra={ordenesCompra && ordenesCompra.length > 0 ? ordenesCompra : INITIAL_ORDENES_COMPRA}
+            ordenesCompra={ordenesCompra}
             openReportsModal={(type, data) => handleOpenReportsModal('ordenescompra', data || ordenesCompra)}
           />
         )}

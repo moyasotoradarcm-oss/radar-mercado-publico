@@ -46,13 +46,15 @@ export const HistorialEvaluacionesView: React.FC = () => {
   };
 
   const openDetalle = (ev: EvaluacionDB) => {
+    const organismo = ev?.organismo || 'Sin información';
+
     // Construct dummy LicitacionItem based on DB row
     const dummyItem = {
       id: ev.codigo_proceso,
       codigo: ev.codigo_proceso,
       nombre: ev.nombre_proceso,
-      organismo: ev.organismo,
-      cliente: ev.organismo,
+      organismo,
+      cliente: organismo,
       tipo: ev.tipo_proceso as any,
       comprador: "Sin información",
       fecha_cierre: ev.created_at,
@@ -150,8 +152,8 @@ export const HistorialEvaluacionesView: React.FC = () => {
                 </h3>
                 
                 <div className="text-xs text-slate-600 mb-4 flex-1">
-                  <p className="line-clamp-1 mb-1" title={ev.organismo}>
-                    <span className="font-medium text-slate-700">Comprador:</span> {ev.organismo}
+                  <p className="line-clamp-1 mb-1" title={ev?.organismo || 'Sin información'}>
+                    <span className="font-medium text-slate-700">Comprador:</span> {ev?.organismo || 'Sin información'}
                   </p>
                   <p className="flex items-center text-slate-500 mt-2">
                     <CalendarDays className="w-3.5 h-3.5 mr-1.5" />

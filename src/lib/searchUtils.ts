@@ -1,4 +1,6 @@
 import { extractFechaCierre, getItemOfficialUrl, calculateChileRemainingTime, cleanOfficialId } from './dateUtils';
+import { KEYWORD_CLUSTERS, type KeywordClusterKey } from '../config/keywords';
+import { classifyMercadoPublicoProcess } from './processClassification';
 
 /**
  * Utility functions for Deep Search, Text Normalization, and Keyword Matching
@@ -33,6 +35,63 @@ export function normalizeText(text: string): string {
     .trim();
 }
 
+export function normalizeKeywordText(text: string): string {
+  return normalizeText(text)
+    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function containsKeywordPhrase(normalizedText: string, normalizedPhrase: string): boolean {
+  if (!normalizedText || !normalizedPhrase) return false;
+  const textTokens = normalizedText.split(' ');
+  const phraseTokens = normalizedPhrase.split(' ');
+  if (phraseTokens.length === 1) return textTokens.includes(phraseTokens[0]);
+
+  return textTokens.some((_, index) =>
+    phraseTokens.every((token, phraseIndex) => textTokens[index + phraseIndex] === token)
+  );
+}
+
+export interface KeywordMatch {
+  cluster: KeywordClusterKey;
+  clusterLabel: string;
+  term: string;
+  weight: number;
+}
+
+export interface KeywordMatchResult {
+  score: number;
+  totalWeight: number;
+  matchedClusters: KeywordClusterKey[];
+  matches: KeywordMatch[];
+}
+
+export function matchKeywords(
+  texto: string,
+  activeClusters?: readonly KeywordClusterKey[]
+): KeywordMatchResult {
+  const normalizedText = normalizeKeywordText(texto || '');
+  const activeSet = activeClusters ? new Set(activeClusters) : null;
+  const matches: KeywordMatch[] = [];
+
+  for (const [clusterKey, cluster] of Object.entries(KEYWORD_CLUSTERS) as [KeywordClusterKey, (typeof KEYWORD_CLUSTERS)[KeywordClusterKey]][]) {
+    if (activeSet && !activeSet.has(clusterKey)) continue;
+    for (const entry of cluster.terms) {
+      if (containsKeywordPhrase(normalizedText, normalizeKeywordText(entry.term))) {
+        matches.push({ cluster: clusterKey, clusterLabel: cluster.label, ...entry });
+      }
+    }
+  }
+
+  const matchedClusters = Array.from(new Set(matches.map((match) => match.cluster)));
+  const totalWeight = matches.reduce((total, match) => total + match.weight, 0);
+  const combinedClusterBonus = Math.max(0, matchedClusters.length - 1) * 10;
+  const score = Math.min(100, Math.round(totalWeight * 8 + combinedClusterBonus));
+
+  return { score, totalWeight, matchedClusters, matches };
+}
+
 /**
  * Builds the full searchable text representation of an opportunity item.
  * Gathers ALL fields (id, code/codigo, title/nombre, buyer/organism/organizacion, type/tipo, etc.)
@@ -64,6 +123,9 @@ export function getItemSearchableText(item: any): string {
     // 3. Buyer & Organism & Organización & Cliente
     item.buyer,
     item.organism,
+    item.organismoNombre,
+    item.NombreOrganismo,
+    item.Comprador?.NombreOrganismo,
     item.organizacion,
     item.cliente,
     item['ORGANIZACIÓN'],
@@ -144,24 +206,11 @@ export function createUnifiedOpportunity(raw: any): any {
   ) || 'Organismo Comprador';
 
   // 4. Tipo / Modalidad (Valores exactos: "Licitación", "Convenio Marco", "Compra Ágil")
-  const rawTypeLower = cleanStr(raw.tipo || raw.type || raw['Tipo de Proceso']).toLowerCase();
-  const idUpper = id.toUpperCase();
-  const nameUpper = nombre.toUpperCase();
-
-  let tipo: 'Licitación' | 'Convenio Marco' | 'Compra Ágil' = 'Licitación';
-  if (
-    rawTypeLower.includes('convenio') || rawTypeLower.includes('marco') || rawTypeLower === 'cm' ||
-    idUpper.startsWith('CM-') || idUpper.includes('AISP') || nameUpper.includes('CONVENIO MARCO')
-  ) {
-    tipo = 'Convenio Marco';
-  } else if (
-    rawTypeLower.includes('agil') || rawTypeLower.includes('ágil') || rawTypeLower.includes('cot') ||
-    idUpper.includes('COT') || nameUpper.includes('COMPRA AGIL') || nameUpper.includes('COMPRA ÁGIL')
-  ) {
-    tipo = 'Compra Ágil';
-  } else {
-    tipo = 'Licitación';
-  }
+  const classification = classifyMercadoPublicoProcess({
+    ...raw,
+    Nombre: nombre,
+    tipo: raw.tipo || raw.type || raw.tipo_compra || raw.tipo_proceso || raw['Tipo de Proceso']
+  }, id);
 
   // 5. Comprador / Contacto
   const comprador = cleanStr(
@@ -199,7 +248,8 @@ export function createUnifiedOpportunity(raw: any): any {
     id,
     nombre,
     organismo,
-    tipo,
+    tipo: classification.tipo,
+    tipo_compra: classification.tipo_compra,
     comprador,
     fecha_cierre,
     monto: montoNum,
@@ -225,13 +275,13 @@ export function createUnifiedOpportunity(raw: any): any {
 export function matchesSearchTerm(item: any, searchTerm: string): boolean {
   if (!searchTerm || !searchTerm.trim()) return true;
 
-  const term = searchTerm.toLowerCase().trim();
+  const query = normalizeKeywordText(searchTerm);
+  const fullText = normalizeKeywordText(getItemSearchableText(item));
+  if (!query || !fullText) return false;
+  if (containsKeywordPhrase(fullText, query)) return true;
 
-  const idVal = (item.id || item.codigo || '').toString().toLowerCase();
-  const nombreVal = (item.nombre || item.title || '').toString().toLowerCase();
-  const organismoVal = (item.organismo || item.cliente || item.buyer || '').toString().toLowerCase();
-
-  return idVal.includes(term) || nombreVal.includes(term) || organismoVal.includes(term);
+  const textTokens = new Set(fullText.split(' '));
+  return query.split(' ').every((token) => textTokens.has(token));
 }
 
 /**
@@ -260,20 +310,21 @@ export function matchesDeepSearch(
   if (!searchTerm || !searchTerm.trim()) return true;
 
   // 1. Normalización del término de búsqueda
-  const queryNorm = normalizeText(searchTerm);
+  const queryNorm = normalizeKeywordText(searchTerm);
   if (!queryNorm) return true;
 
   // 2. Extracción de texto consolidado de todos los campos
-  const fullText = getItemSearchableText(item);
+  const fullText = normalizeKeywordText(getItemSearchableText(item));
 
-  // 3. Coincidencia Parcial mediante .includes()
-  if (fullText.includes(queryNorm)) {
+  // 3. Coincidencia de frase/token completo, sin falsos positivos por substrings.
+  if (containsKeywordPhrase(fullText, queryNorm)) {
     return true;
   }
 
-  // 4. Coincidencia flexible por palabras/tokens individuales (ej: "425-37 lp26" o "minvu 425-37")
+  // 4. Coincidencia por todos los tokens normalizados.
   const tokens = queryNorm.split(' ').filter(Boolean);
-  return tokens.length > 0 && tokens.every((token) => fullText.includes(token));
+  const textTokens = new Set(fullText.split(' ').filter(Boolean));
+  return tokens.length > 0 && tokens.every((token) => textTokens.has(token));
 }
 
 /**
@@ -295,8 +346,8 @@ export function matchesAllTagsDeep(
   selectedTags: string[]
 ): boolean {
   if (!selectedTags || selectedTags.length === 0) return true;
-  const fullText = getItemSearchableText(item);
-  return selectedTags.every((tag) => fullText.includes(normalizeText(tag)));
+  const fullText = normalizeKeywordText(getItemSearchableText(item));
+  return selectedTags.every((tag) => containsKeywordPhrase(fullText, normalizeKeywordText(tag)));
 }
 
 /**
@@ -350,7 +401,22 @@ export function getItemNombre(item: any): string {
 
 export function getItemOrganismo(item: any): string {
   if (!item) return 'N/A';
-  return item.organismo || item.cliente || item['ORGANIZACIÓN'] || item['ORGANIZACION'] || item.organizacion || item.razon_social || item['Organismo Comprador'] || item.organismoComprador || 'N/A';
+
+  const rawOrganismo = item?.organismo
+    || item?.cliente
+    || item?.Comprador?.NombreOrganismo
+    || item?.NombreOrganismo
+    || item?.nombreOrganismo
+    || item?.comprador?.nombreOrganismo
+    || item?.['ORGANIZACIÓN']
+    || item?.['ORGANIZACION']
+    || item?.organizacion
+    || item?.razon_social
+    || item?.['Organismo Comprador']
+    || item?.organismoComprador
+    || 'N/A';
+
+  return rawOrganismo || 'Sin información de organismo';
 }
 
 export function getItemDescripcion(item: any): string {
@@ -360,8 +426,7 @@ export function getItemDescripcion(item: any): string {
 
 export function getItemTipo(item: any): string {
   if (!item) return 'Licitación';
-  if (item['ID COTIZACIÓN'] || item['ID COTIZACION'] || item.id_cotizacion) return 'Convenio Marco';
-  return item.tipo || item['Tipo de Proceso'] || item.tipoProceso || 'Licitación';
+  return item.tipo_compra || item.tipo || item['Tipo de Proceso'] || item.tipoProceso || 'Licitación';
 }
 
 export function getItemFechaCierre(item: any): string {

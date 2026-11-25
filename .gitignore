@@ -1,8 +1,40 @@
 node_modules/
 build/
 dist/
+dist-server/
 coverage/
 .DS_Store
 *.log
 .env*
 !.env.example
+storageState.json
+session_mp.json
+
+# Datos locales generados en ejecución (pueden contener información de contactos)
+postulaciones.json
+opportunities.json
+compradores.json
+evaluaciones*.json
+
+# Binarios y archivos de depuración
+node.tar.xz
+node-v*/
+debug-*.png
+untitled*.tsx
+PerfilBrave/
+
+# Entornos de Python
+venv/
+.venv/
+__pycache__/
+
+# Radar V3 - Exclusiones locales y sensibles
+node_modules/
+dist/
+.env
+.env.*
+storageState.json
+*storageState*.json
+debug-*.png
+*.log
+.DS_Store
